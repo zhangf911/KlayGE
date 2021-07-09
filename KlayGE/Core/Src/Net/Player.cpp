@@ -23,14 +23,12 @@
 #include <KlayGE/NetMsg.hpp>
 #include <KlayGE/Player.hpp>
 
-#ifndef KLAYGE_PLATFORM_WINDOWS_RUNTIME
-
 namespace
 {
 	class ReceiveThreadFunc
 	{
 	public:
-		ReceiveThreadFunc(KlayGE::Player* player)
+		explicit ReceiveThreadFunc(KlayGE::Player* player)
 			: player_(player)
 			{ }
 
@@ -75,22 +73,21 @@ namespace KlayGE
 			if (!sendQueue_.empty())
 			{
 				// 发送队列里的消息
-				typedef KLAYGE_DECLTYPE(sendQueue_) SendQueneType;
-				KLAYGE_FOREACH(SendQueneType::reference msg, sendQueue_)
+				for (auto const & msg : sendQueue_)
 				{
 					socket_.Send(&msg[0], static_cast<int>(msg.size()));
 				}
 			}
 
 			char revBuf[Max_Buffer];
-			std::fill_n(revBuf, sizeof(revBuf), 0);
+			memset(revBuf, 0, sizeof(revBuf));
 			if (socket_.Receive(revBuf, sizeof(revBuf)) != -1)
 			{
 				uint32_t ID;
 				std::memcpy(&ID, &revBuf[1], 4);
 
 				// 删除已发送的信息
-				for (KLAYGE_AUTO(iter, sendQueue_.begin()); iter != sendQueue_.end();)
+				for (auto iter = sendQueue_.begin(); iter != sendQueue_.end();)
 				{
 					std::vector<char>& msg = *iter;
 
@@ -125,7 +122,7 @@ namespace KlayGE
 		socket_.TimeOut(2000);
 
 		char buf[Max_Buffer];
-		std::fill_n(buf, sizeof(buf), 0);
+		memset(buf, 0, sizeof(buf));
 
 		buf[0] = MSG_JOIN;
 		name_.copy(&buf[1], this->name_.length());
@@ -220,5 +217,3 @@ namespace KlayGE
 		return socket_.Send(buf, size);
 	}
 }
-
-#endif

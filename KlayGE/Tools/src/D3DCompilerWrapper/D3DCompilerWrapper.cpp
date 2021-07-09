@@ -34,10 +34,15 @@
 
 #ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
+#elif defined(__GNUC__)
+#define KLAYGE_COMPILER_GCC
+#elif defined(__clang__)
+#define KLAYGE_COMPILER_CLANG
 #endif
 
 #include <stdio.h>
 #include <windows.h>
+#include <KlayGE/SALWrapper.hpp>
 #include <d3d11shader.h>
 
 #ifndef D3D11_SHVER_GET_TYPE
@@ -76,13 +81,24 @@ class D3DCompiler
 {
 public:
 	D3DCompiler()
+		: mod_d3dcompiler_(NULL),
+			DynamicD3DCompile_(NULL),
+			DynamicD3DReflect_(NULL),
+			DynamicD3DStripShader_(NULL)
 	{
 		mod_d3dcompiler_ = LoadLibraryEx(TEXT("d3dcompiler_47.dll"), NULL, 0);
 		if (mod_d3dcompiler_)
 		{
+#if defined(KLAYGE_COMPILER_GCC) && (__GNUC__ >= 8)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
 			DynamicD3DCompile_ = reinterpret_cast<D3DCompileFunc>(GetProcAddress(mod_d3dcompiler_, "D3DCompile"));
 			DynamicD3DReflect_ = reinterpret_cast<D3DReflectFunc>(GetProcAddress(mod_d3dcompiler_, "D3DReflect"));
 			DynamicD3DStripShader_ = reinterpret_cast<D3DStripShaderFunc>(GetProcAddress(mod_d3dcompiler_, "D3DStripShader"));
+#if defined(KLAYGE_COMPILER_GCC) && (__GNUC__ >= 8)
+#pragma GCC diagnostic pop
+#endif
 		}
 		else
 		{
@@ -388,7 +404,7 @@ int main(int argc, char* argv[])
 			if (shader_type == D3D11_SHVER_VERTEX_SHADER)
 			{
 				D3D11_SIGNATURE_PARAMETER_DESC_47 signature;
-				for (UINT i = 0; i < desc.InputParameters; ++i)
+				for (UINT i = 0; i < desc.InputParameters; ++ i)
 				{
 					reflection->GetInputParameterDesc(i, reinterpret_cast<D3D11_SIGNATURE_PARAMETER_DESC*>(&signature));
 					WriteString(signature.SemanticName, fp);

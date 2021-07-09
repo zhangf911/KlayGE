@@ -20,8 +20,6 @@
 #include <KlayGE/NetMsg.hpp>
 #include <KlayGE/Lobby.hpp>
 
-#ifndef KLAYGE_PLATFORM_WINDOWS_RUNTIME
-
 namespace KlayGE
 {
 	// 构造函数
@@ -40,7 +38,7 @@ namespace KlayGE
 
 	Lobby::PlayerAddrsIter Lobby::ID(sockaddr_in const & addr)
 	{
-		for (KLAYGE_AUTO(iter, players_.begin()); iter != players_.end(); ++ iter)
+		for (auto iter = players_.begin(); iter != players_.end(); ++ iter)
 		{
 			if (0 == std::memcmp(&addr, &(iter->second.addr), sizeof(addr)))
 			{
@@ -103,19 +101,17 @@ namespace KlayGE
 			}
 
 			// 发送信息
-			typedef KLAYGE_DECLTYPE(players_) PlayersType;
-			KLAYGE_FOREACH(PlayersType::reference player, players_)
+			for (auto const & player : players_)
 			{
-				SendQueueType& msgs = player.second.msgs;
-				typedef KLAYGE_DECLTYPE(msgs) MsgsType;
-				KLAYGE_FOREACH(MsgsType::reference msg, msgs)
+				auto const & msgs = player.second.msgs;
+				for (auto const & msg : msgs)
 				{
 					socket_.SendTo(&msg[0], static_cast<int>(msg.size()), player.second.addr);
 				}
 			}
 
 			// 检查是否有在线用户超时
-			for (KLAYGE_AUTO(iter, players_.begin()); iter != players_.end();)
+			for (auto iter = players_.begin(); iter != players_.end();)
 			{
 				// 大于20秒
 				if (std::time(nullptr) - iter->second.time >= 20 * 1000)
@@ -134,17 +130,8 @@ namespace KlayGE
 	/////////////////////////////////////////////////////////////////////////////////
 	char Lobby::NumPlayer() const
 	{
-		char n = 0;
-		typedef KLAYGE_DECLTYPE(players_) PlayersType;
-		KLAYGE_FOREACH(PlayersType::const_reference player, players_)
-		{
-			if (player.first != 0)
-			{
-				++ n;
-			}
-		}
-
-		return n;
+		return static_cast<char>(std::count_if(
+			players_.begin(), players_.end(), [](std::pair<uint32_t, PlayerDes> const& player) { return (player.first != 0); }));
 	}
 
 	// 设置大厅名称
@@ -175,8 +162,7 @@ namespace KlayGE
 		players_.resize(maxPlayers);
 		PlayerAddrs(players_).swap(players_);
 
-		typedef KLAYGE_DECLTYPE(players_) PlayersType;
-		KLAYGE_FOREACH(PlayersType::reference player, players_)
+		for (auto& player : players_)
 		{
 			player.first = 0;
 		}
@@ -218,7 +204,7 @@ namespace KlayGE
 		//			Player名字		16 字节
 
 		char id = 1;
-		KLAYGE_AUTO(iter, players_.begin());
+		auto iter = players_.begin();
 		for (; iter != this->players_.end(); ++ iter, ++ id)
 		{
 			if (0 == iter->first)
@@ -278,7 +264,7 @@ namespace KlayGE
 		//			最大Players数	1 字节
 		//			Lobby名字		16 字节
 
-		std::fill_n(sendBuf, 18, 0);
+		memset(sendBuf, 0, 18);
 		sendBuf[0] = this->NumPlayer();
 		sendBuf[1] = this->MaxPlayers();
 		this->LobbyName().copy(&sendBuf[2], this->LobbyName().length());
@@ -293,5 +279,3 @@ namespace KlayGE
 		}
 	}
 }
-
-#endif

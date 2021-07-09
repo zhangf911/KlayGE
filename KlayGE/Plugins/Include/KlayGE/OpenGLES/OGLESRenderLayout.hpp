@@ -21,14 +21,13 @@
 
 namespace KlayGE
 {
-	class OGLESRenderLayout : public RenderLayout
+	class OGLESRenderLayout final : public RenderLayout
 	{
 	public:
 		OGLESRenderLayout();
-		~OGLESRenderLayout();
+		~OGLESRenderLayout() override;
 
 		void Active(ShaderObjectPtr const & so) const;
-		void Deactive(ShaderObjectPtr const & so) const;
 
 	private:
 		void BindVertexStreams(ShaderObjectPtr const & so) const;
@@ -36,8 +35,6 @@ namespace KlayGE
 
 	private:
 		mutable std::map<ShaderObjectPtr, GLuint> vaos_;
-
-		bool use_vao_;
 	};
 }
 

@@ -14,7 +14,7 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/ResLoader.hpp>
 #include <KlayGE/AudioDataSource.hpp>
 
@@ -28,9 +28,7 @@ namespace KlayGE
 {
 	// 构造函数
 	/////////////////////////////////////////////////////////////////////////////////
-	OggVorbisSource::OggVorbisSource()
-	{
-	}
+	OggVorbisSource::OggVorbisSource() noexcept = default;
 
 	// 析构函数
 	/////////////////////////////////////////////////////////////////////////////////
@@ -88,10 +86,7 @@ namespace KlayGE
 			}
 			else
 			{
-				if (result <= 0)
-				{
-					break;
-				}
+				break;
 			}
 		}
 
@@ -161,9 +156,7 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			dir = std::ios_base::beg;
-			break;
+			KFL_UNREACHABLE("Invalid whence");
 		};
 
 		vorbis_data->oggFile_->seekg(static_cast<long>(offset), dir);

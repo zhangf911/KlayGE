@@ -29,24 +29,28 @@
 */
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KFL/Color.hpp>
 #include <KlayGE/Texture.hpp>
-#include <KFL/Thread.hpp>
 #include <KFL/Half.hpp>
 
-#include <vector>
 #include <cstring>
+#include <iterator>
+#include <random>
+#include <vector>
 #include <boost/assert.hpp>
+#ifdef KLAYGE_COMPILER_MSVC
+	#include <intrin.h>		// For _BitScanForward
+#endif
 
 #include <KlayGE/TexCompressionBC.hpp>
+#include "../Base/TableGen/Tables.hpp"
 
 namespace
 {
 	using namespace KlayGE;
-
-	mutex singleton_mutex;
 
 	static int const BC67_PREC_WEIGHTS[][16] =
 	{
@@ -126,20 +130,28 @@ namespace
 	static std::pair<uint32_t, uint32_t> const BC67_INTERPOLATION_VALUES[4][16] =
 	{
 		{
-			{ 64, 0 }, { 33, 31 }, { 0, 64 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
-			{ 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }
+			std::make_pair(64, 0), std::make_pair(33, 31), std::make_pair(0, 64), std::make_pair(0, 0),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0)
 		},
 		{
-			{ 64, 0 }, { 43, 21 }, { 21, 43 }, { 0, 64 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
-			{ 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }
+			std::make_pair(64, 0), std::make_pair(43, 21), std::make_pair(21, 43), std::make_pair(0, 64),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0)
 		},
 		{
-			{ 64, 0 }, { 55, 9 }, { 46, 18 }, { 37, 27 }, { 27, 37 }, { 18, 46 }, { 9, 55 }, { 0, 64 },
-			{ 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }
+			std::make_pair(64, 0), std::make_pair(55, 9), std::make_pair(46, 18), std::make_pair(37, 27),
+			std::make_pair(27, 37), std::make_pair(18, 46), std::make_pair(9, 55), std::make_pair(0, 64),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0),
+			std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0), std::make_pair(0, 0)
 		},
 		{
-			{ 64, 0 }, { 60, 4 }, { 55, 9 }, { 51, 13 }, { 47, 17 }, { 43, 21 }, { 38, 26 }, { 34, 30 },
-			{ 30, 34 }, { 26, 38 }, { 21, 43 }, { 17, 47 }, { 13, 51 }, { 9, 55 }, { 4, 60 }, { 0, 64 }
+			std::make_pair(64, 0), std::make_pair(60, 4), std::make_pair(55, 9), std::make_pair(51, 13),
+			std::make_pair(47, 17), std::make_pair(43, 21), std::make_pair(38, 26), std::make_pair(34, 30),
+			std::make_pair(30, 34), std::make_pair(26, 38), std::make_pair(21, 43), std::make_pair(17, 47),
+			std::make_pair(13, 51), std::make_pair(9, 55), std::make_pair(4, 60), std::make_pair(0, 64)
 		}
 	};
 
@@ -239,9 +251,10 @@ namespace
 	bool IsFixUpOffset(size_t partitions, size_t shape, size_t offset)
 	{
 		BOOST_ASSERT((partitions <= 3) && (shape < 64) && (offset < 16));
+		size_t const fix_up = (partitions > 1) ? FIX_UP_TABLE[partitions - 2][shape] : 0;
 		for (size_t p = 0; p < partitions; ++ p)
 		{
-			if (offset == ((partitions > 1) ? (FIX_UP_TABLE[partitions - 2][shape] >> (p * 4)) & 0xF : 0))
+			if (offset == ((fix_up >> (p * 4)) & 0xF))
 			{
 				return true;
 			}
@@ -326,6 +339,7 @@ namespace
 #else
 		if (0 == v)
 		{
+			index = 0;
 			return 0;
 		}
 		else
@@ -574,7 +588,7 @@ namespace
 		{
 			v.w() -= step.w();
 		}
-		else if (!(dir * 8UL) && (1 == old_pbit))
+		else if (!(dir & 8UL) && (1 == old_pbit))
 		{
 			v.w() += step.w();
 		}
@@ -862,57 +876,25 @@ namespace
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid rotation mode");
 		}
+	}
+
+	int IntRand()
+	{
+		static thread_local std::mt19937 gen;
+		std::uniform_int_distribution<int> random_dis(0, RAND_MAX);
+		return random_dis(gen);
 	}
 }
 
 namespace KlayGE
 {
-	uint8_t TexCompressionBC1::expand5_[32];
-	uint8_t TexCompressionBC1::expand6_[64];
-	uint8_t TexCompressionBC1::o_match5_[256][2];
-	uint8_t TexCompressionBC1::o_match6_[256][2];
-	uint8_t TexCompressionBC1::quant_rb_tab_[256 + 16];
-	uint8_t TexCompressionBC1::quant_g_tab_[256 + 16];
-	bool TexCompressionBC1::lut_inited_ = false;
+	using namespace TexCompressionLUT;
 
 	TexCompressionBC1::TexCompressionBC1()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC1) * 4;
-		decoded_fmt_ = EF_ARGB8;
-
-		if (!lut_inited_)
-		{
-			unique_lock<mutex> lock(singleton_mutex);
-			if (!lut_inited_)
-			{
-				for (int i = 0; i < 32; ++ i)
-				{
-					expand5_[i] = Extend5To8Bits(i);
-				}
-
-				for (int i = 0; i < 64; ++ i)
-				{
-					expand6_[i] = Extend6To8Bits(i);
-				}
-
-				for (int i = 0; i < 256 + 16; ++ i)
-				{
-					int v = MathLib::clamp(i - 8, 0, 255);
-					quant_rb_tab_[i] = expand5_[Mul8Bit(v, 31)];
-					quant_g_tab_[i] = expand6_[Mul8Bit(v, 63)];
-				}
-
-				this->PrepareOptTable(&o_match5_[0][0], expand5_, 32);
-				this->PrepareOptTable(&o_match6_[0][0], expand6_, 64);
-
-				lut_inited_ = true;
-			}
-		}
+		compression_format_ = EF_BC1;
 	}
 
 	void TexCompressionBC1::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
@@ -923,7 +905,7 @@ namespace KlayGE
 		BC1Block& bc1 = *static_cast<BC1Block*>(output);
 		ARGBColor32 const * argb = static_cast<ARGBColor32 const *>(input);
 
-		array<ARGBColor32, 16> tmp_argb;
+		std::array<ARGBColor32, 16> tmp_argb;
 		bool alpha = false;
 		for (size_t i = 0; i < tmp_argb.size(); ++ i)
 		{
@@ -938,7 +920,7 @@ namespace KlayGE
 			}
 		}
 
-		this->EncodeBC1Internal(bc1, argb, alpha, method);
+		this->EncodeBC1Internal(bc1, &tmp_argb[0], alpha, method);
 	}
 
 	void TexCompressionBC1::DecodeBlock(void* output, void const * input)
@@ -952,7 +934,7 @@ namespace KlayGE
 		ARGBColor32 max_clr = this->RGB565To888(bc1.clr_0);
 		ARGBColor32 min_clr = this->RGB565To888(bc1.clr_1);
 
-		array<ARGBColor32, 4> clr;
+		std::array<ARGBColor32, 4> clr;
 		clr[0] = max_clr;
 		clr[1] = min_clr;
 		if (bc1.clr_0 > bc1.clr_1)
@@ -984,34 +966,10 @@ namespace KlayGE
 		}
 	}
 
-	void TexCompressionBC1::PrepareOptTable(uint8_t* table, uint8_t const * expand, int size) const
-	{
-		for (int i = 0; i < 256; ++ i)
-		{
-			int best_err = 256;
-
-			for (int min = 0; min < size; ++ min)
-			{
-				for (int max = 0; max < size; ++ max)
-				{
-					int min_e = expand[min];
-					int max_e = expand[max];
-					int err = abs(max_e + Mul8Bit(min_e - max_e, 0x55) - i);
-					if (err < best_err)
-					{
-						table[i * 2 + 0] = static_cast<uint8_t>(max);
-						table[i * 2 + 1] = static_cast<uint8_t>(min);
-						best_err = err;
-					}
-				}
-			}
-		}
-	}
-
 	ARGBColor32 TexCompressionBC1::RGB565To888(uint16_t rgb) const
 	{
-		return ARGBColor32(255, expand5_[(rgb >> 11) & 0x1F], expand6_[(rgb >> 5) & 0x3F],
-			expand5_[(rgb >> 0) & 0x1F]);
+		return ARGBColor32(255, EXPAND5[(rgb >> 11) & 0x1F], EXPAND6[(rgb >> 5) & 0x3F],
+			EXPAND5[(rgb >> 0) & 0x1F]);
 	}
 
 	uint16_t TexCompressionBC1::RGB888To565(ARGBColor32 const & rgb) const
@@ -1023,7 +981,7 @@ namespace KlayGE
 	uint32_t TexCompressionBC1::MatchColorsBlock(ARGBColor32 const * argb,
 			ARGBColor32 const & min_clr, ARGBColor32 const & max_clr, bool alpha) const
 	{
-		array<ARGBColor32, 4> color;
+		std::array<ARGBColor32, 4> color;
 		color[0] = max_clr;
 		color[1] = min_clr;
 		if (!alpha)
@@ -1051,7 +1009,7 @@ namespace KlayGE
 
 		if (alpha)
 		{
-			array<int, 2> stops;
+			std::array<int, 2> stops;
 			for (int i = 0; i < 2; ++ i)
 			{
 				stops[i] = color[i].r() * dirr + color[i].g() * dirg + color[i].b() * dirb;
@@ -1079,7 +1037,7 @@ namespace KlayGE
 		}
 		else
 		{
-			array<int, 4> stops;
+			std::array<int, 4> stops;
 			for (int i = 0; i < 4; ++ i)
 			{
 				stops[i] = color[i].r() * dirr + color[i].g() * dirg + color[i].b() * dirb;
@@ -1201,7 +1159,7 @@ namespace KlayGE
 				vfb = b;
 			}
 
-			float magn = std::max(std::max(abs(vfr), abs(vfg)), abs(vfb));
+			float magn = std::max(std::max(std::abs(vfr), std::abs(vfg)), std::abs(vfb));
 			int v_r, v_g, v_b;
 
 			if (magn < 4.0f) // too small, default to luminance
@@ -1378,8 +1336,8 @@ namespace KlayGE
 				int const b = argb[0].b();
 
 				mask = 0xAAAAAAAA;
-				max16 = (o_match5_[r][0] << 11) | (o_match6_[g][0] << 5) | o_match5_[b][0];
-				min16 = (o_match5_[r][1] << 11) | (o_match6_[g][1] << 5) | o_match5_[b][1];
+				max16 = (O_MATCH5[r][0] << 11) | (O_MATCH6[g][0] << 5) | O_MATCH5[b][0];
+				min16 = (O_MATCH5[r][1] << 11) | (O_MATCH6[g][1] << 5) | O_MATCH5[b][1];
 			}
 		}
 
@@ -1423,12 +1381,7 @@ namespace KlayGE
 
 	TexCompressionBC2::TexCompressionBC2()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC2) * 4;
-		decoded_fmt_ = EF_ARGB8;
-
-		bc1_codec_ = MakeSharedPtr<TexCompressionBC1>();
+		compression_format_ = EF_BC2;
 	}
 
 	void TexCompressionBC2::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
@@ -1439,8 +1392,8 @@ namespace KlayGE
 		BC2Block& bc2 = *static_cast<BC2Block*>(output);
 		ARGBColor32 const * argb = static_cast<ARGBColor32 const *>(input);
 
-		array<uint8_t, 16> alpha;
-		array<ARGBColor32, 16> xrgb;
+		std::array<uint8_t, 16> alpha;
+		std::array<ARGBColor32, 16> xrgb;
 		for (size_t i = 0; i < xrgb.size(); ++ i)
 		{
 			xrgb[i] = argb[i];
@@ -1448,7 +1401,7 @@ namespace KlayGE
 			alpha[i] = static_cast<uint8_t>(argb[i].a() >> 4);
 		}
 
-		bc1_codec_->EncodeBC1Internal(bc2.bc1, &xrgb[0], false, method);
+		bc1_codec_.EncodeBC1Internal(bc2.bc1, &xrgb[0], false, method);
 		
 		for (int i = 0; i < 4; ++ i)
 		{
@@ -1465,7 +1418,7 @@ namespace KlayGE
 		ARGBColor32* argb = static_cast<ARGBColor32*>(output);
 		BC2Block const * bc2_block = static_cast<BC2Block const *>(input);
 
-		bc1_codec_->DecodeBlock(argb, &bc2_block->bc1);
+		bc1_codec_.DecodeBlock(argb, &bc2_block->bc1);
 
 		for (int i = 0; i < 4; ++ i)
 		{
@@ -1479,13 +1432,7 @@ namespace KlayGE
 
 	TexCompressionBC3::TexCompressionBC3()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC3) * 4;
-		decoded_fmt_ = EF_ARGB8;
-
-		bc1_codec_ = MakeSharedPtr<TexCompressionBC1>();
-		bc4_codec_ = MakeSharedPtr<TexCompressionBC4>();
+		compression_format_ = EF_BC3;
 	}
 
 	void TexCompressionBC3::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
@@ -1496,8 +1443,8 @@ namespace KlayGE
 		BC3Block& bc3 = *static_cast<BC3Block*>(output);
 		ARGBColor32 const * argb = static_cast<ARGBColor32 const *>(input);
 
-		array<uint8_t, 16> alpha;
-		array<ARGBColor32, 16> xrgb;
+		std::array<uint8_t, 16> alpha;
+		std::array<ARGBColor32, 16> xrgb;
 		for (size_t i = 0; i < xrgb.size(); ++ i)
 		{
 			xrgb[i] = argb[i];
@@ -1505,8 +1452,8 @@ namespace KlayGE
 			alpha[i] = static_cast<uint8_t>(argb[i].a());
 		}
 
-		bc1_codec_->EncodeBC1Internal(bc3.bc1, &xrgb[0], false, method);
-		bc4_codec_->EncodeBlock(&bc3.alpha, &alpha[0], method);
+		bc1_codec_.EncodeBC1Internal(bc3.bc1, &xrgb[0], false, method);
+		bc4_codec_.EncodeBlock(&bc3.alpha, &alpha[0], method);
 	}
 
 	void TexCompressionBC3::DecodeBlock(void* output, void const * input)
@@ -1517,10 +1464,10 @@ namespace KlayGE
 		ARGBColor32* argb = static_cast<ARGBColor32*>(output);
 		BC3Block const * bc3_block = static_cast<BC3Block const *>(input);
 
-		bc1_codec_->DecodeBlock(argb, &bc3_block->bc1);
+		bc1_codec_.DecodeBlock(argb, &bc3_block->bc1);
 
-		array<uint8_t, 16> alpha_block;
-		bc4_codec_->DecodeBlock(&alpha_block[0], &bc3_block->alpha);
+		std::array<uint8_t, 16> alpha_block;
+		bc4_codec_.DecodeBlock(&alpha_block[0], &bc3_block->alpha);
 
 		for (size_t i = 0; i < alpha_block.size(); ++ i)
 		{
@@ -1531,10 +1478,7 @@ namespace KlayGE
 
 	TexCompressionBC4::TexCompressionBC4()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC4) * 4;
-		decoded_fmt_ = EF_R8;
+		compression_format_ = EF_BC4;
 	}
 
 	// Alpha block compression (this is easy for a change)
@@ -1543,7 +1487,7 @@ namespace KlayGE
 		BOOST_ASSERT(output);
 		BOOST_ASSERT(input);
 
-		UNREF_PARAM(method);
+		KFL_UNUSED(method);
 
 		BC4Block& bc4 = *static_cast<BC4Block*>(output);
 		uint8_t const * r = static_cast<uint8_t const *>(input);
@@ -1603,7 +1547,7 @@ namespace KlayGE
 		uint8_t* alpha_block = static_cast<uint8_t*>(output);
 		BC4Block const & bc4 = *static_cast<BC4Block const *>(input);
 
-		array<uint8_t, 8> alpha;
+		std::array<uint8_t, 8> alpha;
 		float falpha0 = bc4.alpha_0 / 255.0f;
 		float falpha1 = bc4.alpha_1 / 255.0f;
 		alpha[0] = bc4.alpha_0;
@@ -1640,12 +1584,7 @@ namespace KlayGE
 
 	TexCompressionBC5::TexCompressionBC5()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC5) * 4;
-		decoded_fmt_ = EF_GR8;
-
-		bc4_codec_ = MakeSharedPtr<TexCompressionBC4>();
+		compression_format_ = EF_BC5;
 	}
 
 	void TexCompressionBC5::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
@@ -1656,16 +1595,16 @@ namespace KlayGE
 		BC5Block& bc5 = *static_cast<BC5Block*>(output);
 		uint16_t const * gr = static_cast<uint16_t const *>(input);
 
-		array<uint8_t, 16> r;
-		array<uint8_t, 16> g;
+		std::array<uint8_t, 16> r = { { 0 } };
+		std::array<uint8_t, 16> g = { { 0 } };
 		for (size_t i = 0; i < r.size(); ++ i)
 		{
 			r[i] = gr[i] & 0xFF;
 			g[i] = gr[i] >> 8;
 		}
 
-		bc4_codec_->EncodeBlock(&bc5.red, &r[0], method);
-		bc4_codec_->EncodeBlock(&bc5.green, &g[0], method);
+		bc4_codec_.EncodeBlock(&bc5.red, &r[0], method);
+		bc4_codec_.EncodeBlock(&bc5.green, &g[0], method);
 	}
 
 	void TexCompressionBC5::DecodeBlock(void* output, void const * input)
@@ -1676,10 +1615,10 @@ namespace KlayGE
 		uint16_t* gr = static_cast<uint16_t*>(output);
 		BC5Block const * bc5_block = static_cast<BC5Block const *>(input);
 
-		array<uint8_t, 16> r;
-		bc4_codec_->DecodeBlock(&r[0], &bc5_block->red);
-		array<uint8_t, 16> g;
-		bc4_codec_->DecodeBlock(&g[0], &bc5_block->green);
+		std::array<uint8_t, 16> r;
+		bc4_codec_.DecodeBlock(&r[0], &bc5_block->red);
+		std::array<uint8_t, 16> g;
+		bc4_codec_.DecodeBlock(&g[0], &bc5_block->green);
 
 		for (size_t i = 0; i < r.size(); ++ i)
 		{
@@ -1945,17 +1884,14 @@ namespace KlayGE
 
 	TexCompressionBC6U::TexCompressionBC6U()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC6) * 4;
-		decoded_fmt_ = EF_ABGR16F;
+		compression_format_ = EF_BC6;
 	}
 
 	void TexCompressionBC6U::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
 	{
-		UNREF_PARAM(output);
-		UNREF_PARAM(input);
-		UNREF_PARAM(method);
+		KFL_UNUSED(output);
+		KFL_UNUSED(input);
+		KFL_UNUSED(method);
 
 		// TODO
 	}
@@ -1982,14 +1918,14 @@ namespace KlayGE
 
 		if (mode_to_info_[mode] >= 0)
 		{
-			BOOST_ASSERT(mode_to_info_[mode] < static_cast<int>(sizeof(mode_info_) / sizeof(mode_info_[0])));
+			BOOST_ASSERT(mode_to_info_[mode] < static_cast<int>(std::size(mode_info_)));
 			ModeDescriptor const * desc = mode_desc_[mode_to_info_[mode]];
 
-			BOOST_ASSERT(mode_to_info_[mode] < static_cast<int>(sizeof(mode_desc_) / sizeof(mode_desc_[0])));
+			BOOST_ASSERT(mode_to_info_[mode] < static_cast<int>(std::size(mode_desc_)));
 			ModeInfo const & info = mode_info_[mode_to_info_[mode]];
 
-			array<std::pair<int3, int3>, BC6_MAX_REGIONS> end_pts;
-			memset(&end_pts[0], 0, BC6_MAX_REGIONS * sizeof(end_pts[0]));
+			std::array<std::pair<int3, int3>, BC6_MAX_REGIONS> end_pts;
+			memset(reinterpret_cast<void*>(&end_pts[0]), 0, BC6_MAX_REGIONS * sizeof(end_pts[0]));
 			uint32_t shape = 0;
 
 			// Read header
@@ -1999,7 +1935,7 @@ namespace KlayGE
 				size_t curr_bit = start_bit;
 				if (ReadBit(input, start_bit))
 				{
-					size_t val = 1UL << desc[curr_bit].bit;
+					uint32_t val = 1UL << desc[curr_bit].bit;
 					switch (desc[curr_bit].field)
 					{
 					case D:
@@ -2043,7 +1979,7 @@ namespace KlayGE
 						break;
 
 					default:
-						memset(abgr, 0, 16 * sizeof(abgr[0]));
+						memset(reinterpret_cast<void*>(abgr), 0, 16 * sizeof(abgr[0]));
 						return;
 					}
 				}
@@ -2081,14 +2017,14 @@ namespace KlayGE
 				size_t num_bits = IsFixUpOffset(info.partitions, shape, i) ? info.index_prec - 1 : info.index_prec;
 				if (start_bit + num_bits > 128)
 				{
-					memset(abgr, 0, 16 * sizeof(abgr[0]));
+					memset(reinterpret_cast<void*>(abgr), 0, 16 * sizeof(abgr[0]));
 					return;
 				}
 
 				uint8_t index = ReadBits(input, start_bit, num_bits);
 				if (index >= ((info.partitions > 1) ? 8 : 16))
 				{
-					memset(abgr, 0, 16 * sizeof(abgr[0]));
+					memset(reinterpret_cast<void*>(abgr), 0, 16 * sizeof(abgr[0]));
 					return;
 				}
 
@@ -2126,7 +2062,7 @@ namespace KlayGE
 
 	int TexCompressionBC6U::Unquantize(int comp, uint8_t bits_per_comp, bool signed_fmt)
 	{
-		int unq = 0, s = 0;
+		int unq = 0;
 		if (signed_fmt)
 		{
 			if (bits_per_comp >= 16)
@@ -2135,6 +2071,7 @@ namespace KlayGE
 			}
 			else
 			{
+				int s = 0;
 				if (comp < 0)
 				{
 					s = 1;
@@ -2198,24 +2135,21 @@ namespace KlayGE
 
 	TexCompressionBC6S::TexCompressionBC6S()
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_SIGNED_BC6) * 4;
-		decoded_fmt_ = EF_ABGR16F;
+		compression_format_ = EF_SIGNED_BC6;
 	}
 
 	void TexCompressionBC6S::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
 	{
-		UNREF_PARAM(output);
-		UNREF_PARAM(input);
-		UNREF_PARAM(method);
+		KFL_UNUSED(output);
+		KFL_UNUSED(input);
+		KFL_UNUSED(method);
 
 		// TODO
 	}
 
 	void TexCompressionBC6S::DecodeBlock(void* output, void const * input)
 	{
-		bc6u_codec_->DecodeBC6Internal(output, input, true);
+		bc6u_codec_.DecodeBC6Internal(output, input, true);
 	}
 
 
@@ -2240,40 +2174,10 @@ namespace KlayGE
 		{ 2, 6, 4, 0, 0, 2, 0, ARGBColor32(5, 5, 5, 5), ARGBColor32(6, 6, 6, 6), PBT_Unique }
 	};
 
-	uint8_t TexCompressionBC7::expand6_[64];
-	uint8_t TexCompressionBC7::expand7_[128];
-	uint8_t TexCompressionBC7::o_match6_[256][2];
-	uint8_t TexCompressionBC7::o_match7_[256][2];
-	bool TexCompressionBC7::lut_inited_ = false;
-
 	TexCompressionBC7::TexCompressionBC7()
 		: index_mode_(0)
 	{
-		block_width_ = block_height_ = 4;
-		block_depth_ = 1;
-		block_bytes_ = NumFormatBytes(EF_BC7) * 4;
-		decoded_fmt_ = EF_ARGB8;
-
-		if (!lut_inited_)
-		{
-			unique_lock<mutex> lock(singleton_mutex);
-			if (!lut_inited_)
-			{
-				for (int i = 0; i < 64; ++ i)
-				{
-					expand6_[i] = Extend6To8Bits(i);
-				}
-				for (int i = 0; i < 128; ++ i)
-				{
-					expand7_[i] = Extend7To8Bits(i);
-				}
-
-				this->PrepareOptTable(&o_match6_[0][0], expand6_, 64);
-				this->PrepareOptTable2(&o_match7_[0][0], expand7_, 128);
-
-				lut_inited_ = true;
-			}
-		}
+		compression_format_ = EF_BC7;
 	}
 
 	void TexCompressionBC7::EncodeBlock(void* output, void const * input, TexCompressionMethod method)
@@ -2315,12 +2219,10 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			sa_steps = 0;
-			break;
+			KFL_UNREACHABLE("Invalid compression method");
 		}
 
-		RGBACluster block_cluster(argb, block_width_ * block_height_, GetPartition);
+		RGBACluster block_cluster(argb, BlockWidth(EF_BC7) * BlockHeight(EF_BC7), GetPartition);
 		ShapeSelection selection = BoxSelection(block_cluster, metric);
 		BOOST_ASSERT(selection.selected_modes > 0);
 
@@ -2395,7 +2297,7 @@ namespace KlayGE
 			uint8_t const index_prec_1 = mode_info_[mode].index_prec_1;
 			uint8_t const index_prec_2 = mode_info_[mode].index_prec_2;
 			size_t start_bit = mode + 1;
-			array<uint8_t, 6> p;
+			std::array<uint8_t, 6> p;
 			uint8_t shape = ReadBits(input, start_bit, mode_info_[mode].partition_bits);
 			BOOST_ASSERT(shape < BC7_MAX_SHAPES);
 
@@ -2405,7 +2307,7 @@ namespace KlayGE
 			uint8_t index_mode = ReadBits(input, start_bit, mode_info_[mode].index_mode_bits);
 			BOOST_ASSERT(index_mode < 2);
 
-			array<ARGBColor32, BC7_MAX_REGIONS << 1> c;
+			std::array<ARGBColor32, BC7_MAX_REGIONS << 1> c;
 			ARGBColor32 const & rgba_prec = mode_info_[mode].rgba_prec;
 			ARGBColor32 const & rgba_prec_with_p = mode_info_[mode].rgba_prec_with_p;
 
@@ -2421,7 +2323,7 @@ namespace KlayGE
 				{
 					if (start_bit + rgba_prec[ch] > 128)
 					{
-						memset(argb, 0, 16 * sizeof(argb[0]));
+						memset(reinterpret_cast<void*>(argb), 0, 16 * sizeof(argb[0]));
 						return;
 					}
 
@@ -2435,7 +2337,7 @@ namespace KlayGE
 			{
 				if (start_bit > 127)
 				{
-					memset(argb, 0, 16 * sizeof(argb[0]));
+					memset(reinterpret_cast<void*>(argb), 0, 16 * sizeof(argb[0]));
 					return;
 				}
 
@@ -2462,8 +2364,8 @@ namespace KlayGE
 				c[i] = this->Unquantize(c[i], rgba_prec_with_p);
 			}
 
-			array<uint8_t, 16> w1;
-			array<uint8_t, 16> w2;
+			std::array<uint8_t, 16> w1;
+			std::array<uint8_t, 16> w2;
 
 			for (uint32_t i = 0; i < 16; ++ i)
 			{
@@ -2471,7 +2373,7 @@ namespace KlayGE
 					? index_prec_1 - 1 : index_prec_1;
 				if (start_bit + num_bits > 128)
 				{
-					memset(argb, 0, 16 * sizeof(argb[0]));
+					memset(reinterpret_cast<void*>(argb), 0, 16 * sizeof(argb[0]));
 					return;
 				}
 				w1[i] = ReadBits(input, start_bit, num_bits);
@@ -2484,7 +2386,7 @@ namespace KlayGE
 					size_t num_bits = i ? index_prec_2 : index_prec_2 - 1;
 					if (start_bit + num_bits > 128)
 					{
-						memset(argb, 0, 16 * sizeof(argb[0]));
+						memset(reinterpret_cast<void*>(argb), 0, 16 * sizeof(argb[0]));
 						return;
 					}
 					w2[i] = ReadBits(input, start_bit, num_bits);
@@ -2529,54 +2431,7 @@ namespace KlayGE
 		}
 		else
 		{
-			memset(argb, 0, 16 * sizeof(argb[0]));
-		}
-	}
-
-	void TexCompressionBC7::PrepareOptTable(uint8_t* table, uint8_t const * expand, int size) const
-	{
-		for (int i = 0; i < 256; ++ i)
-		{
-			int best_err = 256;
-
-			for (int min = 0; min < size; ++ min)
-			{
-				for (int max = 0; max < size; ++ max)
-				{
-					int min_e = expand[min];
-					int max_e = expand[max];
-					int err = abs(max_e + Mul8Bit(min_e - max_e, 0x55) - i);
-					if (err < best_err)
-					{
-						table[i * 2 + 0] = static_cast<uint8_t>(max);
-						table[i * 2 + 1] = static_cast<uint8_t>(min);
-						best_err = err;
-					}
-				}
-			}
-		}
-	}
-
-	void TexCompressionBC7::PrepareOptTable2(uint8_t* table, uint8_t const * expand, int size) const
-	{
-		for (int i = 0; i < 256; ++ i)
-		{
-			int best_err = 256;
-
-			for (int min = 0; min < size; ++ min)
-			{
-				for (int max = 0; max < size; ++ max)
-				{
-					int combo = (43 * expand[min] + 21 * expand[max] + 32) >> 6;
-					int err = abs(i - combo);
-					if (err < best_err)
-					{
-						table[i * 2 + 0] = static_cast<uint8_t>(min);
-						table[i * 2 + 1] = static_cast<uint8_t>(max);
-						best_err = err;
-					}
-				}
-			}
+			memset(reinterpret_cast<void*>(argb), 0, 16 * sizeof(argb[0]));
 		}
 	}
 
@@ -2591,14 +2446,14 @@ namespace KlayGE
 		uint8_t const b = pixel.b();
 		uint8_t const a = pixel.a();
 
-		WriteBits(output, start_bit, 7, o_match7_[r][0]);
-		WriteBits(output, start_bit, 7, o_match7_[r][1]);
+		WriteBits(output, start_bit, 7, O_MATCH7[r][0]);
+		WriteBits(output, start_bit, 7, O_MATCH7[r][1]);
 
-		WriteBits(output, start_bit, 7, o_match7_[g][0]);
-		WriteBits(output, start_bit, 7, o_match7_[g][1]);
+		WriteBits(output, start_bit, 7, O_MATCH7[g][0]);
+		WriteBits(output, start_bit, 7, O_MATCH7[g][1]);
 
-		WriteBits(output, start_bit, 7, o_match7_[b][0]);
-		WriteBits(output, start_bit, 7, o_match7_[b][1]);
+		WriteBits(output, start_bit, 7, O_MATCH7[b][0]);
+		WriteBits(output, start_bit, 7, O_MATCH7[b][1]);
 
 		WriteBits(output, start_bit, 8, a);
 		WriteBits(output, start_bit, 8, a);
@@ -2671,8 +2526,7 @@ namespace KlayGE
 				break;
 
 			default:
-				BOOST_ASSERT(false);
-				break;
+				KFL_UNREACHABLE("Invalid p-bit type");
 			}
 		}
 
@@ -2743,10 +2597,10 @@ namespace KlayGE
 			for (int s = 0; s < partitions; ++ s)
 			{
 				int const * pbits = this->PBitCombo(mode_info, params.pbit_combo[s]);
-				WriteBits(output, start_bit, 1, static_cast<uint8_t>(pbits[0]));
+				WriteBit(output, start_bit, static_cast<uint8_t>(pbits[0]));
 				if (mode_info.p_bit_type != PBT_Shared)
 				{
-					WriteBits(output, start_bit, 1, static_cast<uint8_t>(pbits[1]));
+					WriteBit(output, start_bit,  static_cast<uint8_t>(pbits[1]));
 				}
 			}
 		}
@@ -2879,8 +2733,7 @@ namespace KlayGE
 			return 4;
 
 		default:
-			BOOST_ASSERT(false);
-			return 1;
+			KFL_UNREACHABLE("Invalid p-bit type");
 		}
 	}
 
@@ -2904,8 +2757,7 @@ namespace KlayGE
 			return pbits[idx % 4];
 
 		default:
-			BOOST_ASSERT(false);
-			return pbits[2];
+			KFL_UNREACHABLE("Invalid p-bit type");
 		}
 	}
 
@@ -3036,7 +2888,7 @@ namespace KlayGE
 		{
 			float4 const & p = pt ? p1 : p2;
 			float4& np = pt ? np1 : np2;
-			uint32_t const rdir = rand() & 0xF;
+			uint32_t const rdir = IntRand() & 0xF;
 
 			np = p;
 			if (has_pbits)
@@ -3068,8 +2920,8 @@ namespace KlayGE
 			return true;
 		}
 
-		size_t const p = static_cast<size_t>(exp(0.1f * static_cast<int64_t>(old_err - new_err) / temp) * RAND_MAX);
-		size_t const r = rand();
+		size_t const p = static_cast<size_t>(exp(0.1f * static_cast<int64_t>(old_err - new_err) / temp) * static_cast<float>(RAND_MAX));
+		size_t const r = IntRand();
 
 		return r < p;
 	}
@@ -3165,7 +3017,7 @@ namespace KlayGE
 
 			uint4 const & error_weights = ERROR_METRICS[error_metric_];
 			uint64_t error = 0;
-			for (uint32_t i = 0; i < dist.size(); ++i)
+			for (uint32_t i = 0; i < dist.size(); ++ i)
 			{
 				uint32_t e = dist[i] * error_weights[i];
 				error += e * e;
@@ -3176,7 +3028,7 @@ namespace KlayGE
 				best_err = error;
 				best_pbit_combo = static_cast<uint8_t>(pbi);
 
-				for (uint32_t ci = 0; ci < p1.size(); ++ci)
+				for (uint32_t ci = 0; ci < p1.size(); ++ ci)
 				{
 					p1[ci] = static_cast<float>(best_val_i[ci]);
 					p2[ci] = static_cast<float>(best_val_j[ci]);
@@ -3217,7 +3069,7 @@ namespace KlayGE
 
 		float min_dp = std::numeric_limits<float>::max();
 		float max_dp = -std::numeric_limits<float>::max();
-		for (uint32_t i = 0; i < cluster.NumValidPoints(); ++i)
+		for (uint32_t i = 0; i < cluster.NumValidPoints(); ++ i)
 		{
 			float dp = MathLib::dot(cluster.Point(i) - cluster.Avg(), axis);
 			if (dp < min_dp)
@@ -3324,7 +3176,7 @@ namespace KlayGE
 		{
 			if (num_pts[i] > 0)
 			{
-				num_buckets_filled++;
+				++ num_buckets_filled;
 				last_filled_bucket = i;
 			}
 		}
@@ -3386,8 +3238,6 @@ namespace KlayGE
 		BOOST_ASSERT(p2 == tp2);
 		BOOST_ASSERT(pbit_combo == best_pbit_combo);
 #endif
-
-		BOOST_ASSERT(best_pbit_combo >= 0);
 
 		return this->OptimizeEndpointsForCluster(mode, cluster,
 			p1, p2, best_indices, best_pbit_combo);
@@ -3465,8 +3315,8 @@ namespace KlayGE
 				BOOST_ASSERT(4 == mode);
 
 				// Mode 4 can be treated like the 6 channel of DXT1 compression.
-				uint32_t a1i = Extend6To8Bits(o_match6_[a_be][1]);
-				uint32_t a2i = Extend6To8Bits(o_match6_[a_be][0]);
+				uint32_t a1i = Extend6To8Bits(O_MATCH6[a_be][1]);
+				uint32_t a2i = Extend6To8Bits(O_MATCH6[a_be][0]);
 
 				if (1 == index_mode_)
 				{
@@ -3514,11 +3364,11 @@ namespace KlayGE
 			// Assign each value to a bucket
 			for (uint32_t i = 0; i < BC67_MAX_NUM_DATA_POINTS; ++ i)
 			{
-
 				float min_dist = 255;
+				buckets[i] = num_buckets;
 				for (uint32_t j = 0; j < num_buckets; ++ j)
 				{
-					float dist = abs(alpha_vals[i] - vals[j]);
+					float dist = std::abs(alpha_vals[i] - vals[j]);
 					if (dist < min_dist)
 					{
 						min_dist = dist;
@@ -3576,7 +3426,7 @@ namespace KlayGE
 					float min_dist = 255.0f;
 					for (uint32_t j = 0; j < num_buckets; ++ j)
 					{
-						float dist = abs(alpha_vals[i] - vals[j]);
+						float dist = std::abs(alpha_vals[i] - vals[j]);
 						if (dist < min_dist)
 						{
 							min_dist = dist;

@@ -10,8 +10,6 @@ class InputCaps : public KlayGE::App3DFramework
 public:
 	InputCaps();
 
-	bool ConfirmDevice() const;
-
 private:
 	void OnCreate();
 	void OnResize(KlayGE::uint32_t width, KlayGE::uint32_t height);
@@ -27,6 +25,8 @@ private:
 	std::wstring joystick_str_;
 	std::wstring touch_str_;
 	std::wstring sensor_str_;
+
+	KlayGE::InputJoystickPtr joystick_;
 };
 
 #endif		// _DISTANCEMAPPING_HPP

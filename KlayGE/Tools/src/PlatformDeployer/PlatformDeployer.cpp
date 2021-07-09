@@ -1,385 +1,303 @@
+/**
+ * @file PlatformDeployer.cpp
+ * @author Minmin Gong
+ *
+ * @section DESCRIPTION
+ *
+ * This source file is part of KlayGE
+ * For the latest info, see http://www.klayge.org
+ *
+ * @section LICENSE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * You may alternatively use this source under the terms of
+ * the KlayGE Proprietary License (KPL). You can obtained such a license
+ * from http://www.klayge.org/licensing/.
+ */
+
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/Hash.hpp>
+#include <KFL/StringUtil.hpp>
 #include <KFL/Util.hpp>
 #include <KlayGE/JudaTexture.hpp>
+#include <KlayGE/RenderDeviceCaps.hpp>
 #include <KlayGE/ResLoader.hpp>
 #include <KFL/XMLDom.hpp>
+#include <KFL/CXX17/filesystem.hpp>
 
 #include <iostream>
 #include <fstream>
-#include <sstream>
 #include <vector>
+#include <regex>
 
-#include <boost/algorithm/string/case_conv.hpp>
+#ifndef KLAYGE_DEBUG
+#define CXXOPTS_NO_RTTI
+#endif
+#include <cxxopts.hpp>
 
-#if defined(KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT) || defined(KLAYGE_TR2_LIBRARY_FILESYSTEM_V3_SUPPORT)
-	#include <filesystem>
-	namespace KlayGE
-	{
-		namespace filesystem = std::tr2::sys;
-	}
-#else
-	#include <boost/filesystem.hpp>
-	namespace KlayGE
-	{
-		namespace filesystem = boost::filesystem;
-	}
-#endif
-#ifdef KLAYGE_CXX11_LIBRARY_REGEX_SUPPORT
-	#include <regex>
-	namespace KlayGE
-	{
-		using std::regex;
-		using std::regex_match;
-		using std::smatch;
-	}
-#else
-	#include <boost/regex.hpp>
-	namespace KlayGE
-	{
-		using boost::regex;
-		using boost::regex_match;
-		using boost::smatch;
-	}
-#endif
-
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4100 4251 4275 4273 4512 4701 4702)
-#endif
-#include <boost/program_options.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4127 6328)
-#endif
-#include <boost/tokenizer.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
+#include <KlayGE/ToolCommon.hpp>
+#include <KlayGE/DevHelper/PlatformDefinition.hpp>
+#include <KlayGE/DevHelper/MeshConverter.hpp>
+#include <KlayGE/DevHelper/MeshMetadata.hpp>
+#include <KlayGE/DevHelper/TexConverter.hpp>
+#include <KlayGE/DevHelper/TexMetadata.hpp>
 
 using namespace std;
 using namespace KlayGE;
 
-struct OfflineRenderDeviceCaps
+TexMetadata DefaultTextureMetadata(size_t res_type_hash, RenderDeviceCaps const & caps)
 {
-	std::string platform;
-	uint8_t major_version;
-	uint8_t minor_version;
-
-	bool bc1_support : 1;
-	bool bc3_support : 1;
-	bool bc5_support : 1;
-	bool bc7_support : 1;
-	bool etc1_support : 1;
-	bool r16_support : 1;
-	bool r16f_support : 1;
-	bool srgb_support : 1;
-};
-
-std::string DosWildcardToRegex(std::string const & wildcard)
-{
-	std::string ret;
-	for (size_t i = 0; i < wildcard.size(); ++ i)
+	TexMetadata default_metadata;
+	switch (res_type_hash)
 	{
-		switch (wildcard[i])
+	case CT_HASH("albedo"):
+	case CT_HASH("emissive"):
+		default_metadata.Slot((res_type_hash == CT_HASH("albedo")) ? RenderMaterial::TS_Albedo : RenderMaterial::TS_Emissive);
+		default_metadata.ForceSRGB(true);
+		break;
+
+	case CT_HASH("metalness_glossiness"):
+		default_metadata.Slot(RenderMaterial::TS_MetalnessGlossiness);
+		default_metadata.ForceSRGB(false);
+		break;
+
+	case CT_HASH("normal"):
+	case CT_HASH("bump"):
+		default_metadata.Slot(RenderMaterial::TS_Normal);
+		default_metadata.ForceSRGB(false);
+		if (res_type_hash == CT_HASH("bump"))
 		{
-		case '*':
-			ret.append(".*");
-			break;
+			default_metadata.BumpToNormal(true);
+			default_metadata.BumpScale(1.0f);
+		}
+		break;
 
-		case '?':
-			ret.append(".");
-			break;
+	case CT_HASH("height"):
+		default_metadata.Slot(RenderMaterial::TS_Height);
+		default_metadata.ForceSRGB(false);
+		break;
+	}
 
-		case '+':
-		case '(':
-		case ')':
-		case '^':
-		case '$':
-		case '.':
-		case '{':
-		case '}':
-		case '[':
-		case ']':
-		case '|':
-		case '\\':
-			ret.push_back('\\');
-			ret.push_back(wildcard[i]);
-			break;
+	default_metadata.MipmapEnabled(true);
+	default_metadata.AutoGenMipmap(true);
 
-		default:
-			ret.push_back(wildcard[i]);
-			break;
+	default_metadata.DeviceDependentAdjustment(caps);
+
+	return default_metadata;
+}
+
+TexMetadata LoadTextureMetadata(std::string const & res_name, TexMetadata const & default_metadata)
+{
+	std::string metadata_name = res_name + ".kmeta";
+	if (ResLoader::Instance().Locate(metadata_name).empty())
+	{
+		return default_metadata;
+	}
+	else
+	{
+		return TexMetadata(metadata_name);
+	}
+}
+
+MeshMetadata LoadMeshMetadata(std::string const & res_name, MeshMetadata const & default_metadata)
+{
+	std::string metadata_name = res_name + ".kmeta";
+	if (ResLoader::Instance().Locate(metadata_name).empty())
+	{
+		return default_metadata;
+	}
+	else
+	{
+		return MeshMetadata(metadata_name);
+	}
+}
+
+void Deploy(std::vector<std::string> const & res_names, std::string_view res_type,
+	RenderDeviceCaps const & caps, std::string_view platform)
+{
+	size_t const res_type_hash = HashRange(res_type.begin(), res_type.end());
+
+	if ((CT_HASH("albedo") == res_type_hash)
+		|| (CT_HASH("emissive") == res_type_hash)
+		|| (CT_HASH("glossiness") == res_type_hash)
+		|| (CT_HASH("metalness") == res_type_hash)
+		|| (CT_HASH("normal") == res_type_hash)
+		|| (CT_HASH("bump") == res_type_hash)
+		|| (CT_HASH("height") == res_type_hash))
+	{
+		TexMetadata const default_metadata = DefaultTextureMetadata(res_type_hash, caps);
+
+		TexConverter tc;
+		for (size_t i = 0; i < res_names.size(); ++ i)
+		{
+			std::cout << "Converting " << res_names[i] << " to " << res_type << std::endl;
+
+			auto metadata = LoadTextureMetadata(res_names[i], default_metadata);
+			auto output_tex = tc.Load(res_names[i], metadata);
+			if (output_tex)
+			{
+				filesystem::path res_path(res_names[i]);
+				SaveTexture(output_tex, res_path.string() + ".dds");
+			}
 		}
 	}
-
-	return ret;
-}
-
-int RetrieveAttrValue(XMLNodePtr node, std::string const & attr_name, int default_value)
-{
-	XMLAttributePtr attr = node->Attrib(attr_name);
-	if (attr)
+	else if (CT_HASH("model") == res_type_hash)
 	{
-		return attr->ValueInt();
-	}
+		MeshMetadata const default_metadata;
 
-	return default_value;
-}
-
-std::string RetrieveAttrValue(XMLNodePtr node, std::string const & attr_name, std::string const & default_value)
-{
-	XMLAttributePtr attr = node->Attrib(attr_name);
-	if (attr)
-	{
-		return attr->ValueString();
-	}
-
-	return default_value;
-}
-
-int RetrieveNodeValue(XMLNodePtr root, std::string const & node_name, int default_value)
-{
-	XMLNodePtr node = root->FirstNode(node_name);
-	if (node)
-	{
-		return RetrieveAttrValue(node, "value", default_value);
-	}
-
-	return default_value;
-}
-
-std::string RetrieveNodeValue(XMLNodePtr root, std::string const & node_name, std::string const & default_value)
-{
-	XMLNodePtr node = root->FirstNode(node_name);
-	if (node)
-	{
-		return RetrieveAttrValue(node, "value", default_value);
-	}
-
-	return default_value;
-}
-
-OfflineRenderDeviceCaps LoadPlatformConfig(std::string const & platform)
-{
-	ResIdentifierPtr plat = ResLoader::Instance().Open("PlatConf/" + platform + ".plat");
-
-	KlayGE::XMLDocument doc;
-	XMLNodePtr root = doc.Parse(plat);
-
-	OfflineRenderDeviceCaps caps;
-
-	caps.platform = RetrieveAttrValue(root, "name", "");
-	caps.major_version = static_cast<uint8_t>(RetrieveAttrValue(root, "major_version", 0));
-	caps.minor_version = static_cast<uint8_t>(RetrieveAttrValue(root, "minor_version", 0));
-
-	caps.bc1_support = RetrieveNodeValue(root, "bc1_support", 0) ? true : false;
-	caps.bc3_support = RetrieveNodeValue(root, "bc3_support", 0) ? true : false;
-	caps.bc5_support = RetrieveNodeValue(root, "bc5_support", 0) ? true : false;
-	caps.bc7_support = RetrieveNodeValue(root, "bc7_support", 0) ? true : false;
-	caps.etc1_support = RetrieveNodeValue(root, "etc1_support", 0) ? true : false;
-	caps.r16_support = RetrieveNodeValue(root, "r16_support", 0) ? true : false;
-	caps.r16f_support = RetrieveNodeValue(root, "r16f_support", 0) ? true : false;
-	caps.srgb_support = RetrieveNodeValue(root, "srgb_support", 0) ? true : false;
-
-	return caps;
-}
-
-void Deploy(std::vector<std::string> const & res_names, std::string const & res_type, OfflineRenderDeviceCaps const & caps)
-{
-	std::ofstream ofs("convert.bat");
-
-	ofs << "@echo off" << std::endl << std::endl;
-	
-	if (("diffuse" == res_type)
-		|| ("specular" == res_type)
-		|| ("emit" == res_type))
-	{
-		for (size_t i = 0; i < res_names.size(); ++i)
+		MeshConverter mc;
+		for (size_t i = 0; i < res_names.size(); ++ i)
 		{
-			if (caps.srgb_support)
+			std::cout << "Converting " << res_names[i] << " to " << res_type << std::endl;
+
+			auto metadata = LoadMeshMetadata(res_names[i], default_metadata);
+			auto output_model = mc.Load(res_names[i], metadata);
+			if (output_model)
 			{
-				ofs << "ForceTexSRGB \"" << res_names[i] << "\" temp.dds" << std::endl;
+				filesystem::path res_path(res_names[i]);
+				SaveModel(*output_model, res_path.string() + ".model_bin");
+			}
+		}
+	}
+	else
+	{
+		std::ofstream ofs("convert.bat");
+
+		if (CT_HASH("cubemap") == res_type_hash)
+		{
+			std::string y_fmt;
+			std::string c_fmt;
+			if (caps.BestMatchTextureFormat(MakeSpan({EF_R16, EF_R16F})) == EF_R16)
+			{
+				y_fmt = "R16";
 			}
 			else
 			{
-				ofs << "copy \"" << res_names[i] << "\" temp.dds" << std::endl;
+				y_fmt = "R16F";
 			}
-			ofs << "Mipmapper temp.dds" << std::endl;
-			if (caps.bc7_support)
+			if (caps.BestMatchTextureFormat(MakeSpan({EF_BC5, EF_BC3})) == EF_BC5)
 			{
-				ofs << "TexCompressor BC7 temp.dds \"" << res_names[i] << "\"" << std::endl;
-			}
-			else if (caps.bc1_support)
-			{
-				ofs << "TexCompressor BC1 temp.dds \"" << res_names[i] << "\"" << std::endl;
-			}
-			else if (caps.etc1_support)
-			{
-				ofs << "TexCompressor ETC1 temp.dds \"" << res_names[i] << "\"" << std::endl;
+				c_fmt = "BC5";
 			}
 			else
 			{
-				ofs << "copy temp.dds \"" << res_names[i] << "\"" << std::endl;
+				c_fmt = "BC3";
 			}
-			ofs << "del temp.dds" << std::endl;
-		}
-	}
-	else if ("normal" == res_type)
-	{
-		for (size_t i = 0; i < res_names.size(); ++ i)
-		{
-			ofs << "Mipmapper \"" << res_names[i] << "\" temp.dds" << std::endl;
-			if (caps.bc5_support)
+
+			for (size_t i = 0; i < res_names.size(); ++ i)
 			{
-				ofs << "NormalMapCompressor temp.dds \"" << res_names[i] << "\" BC5" << std::endl;
+				std::cout << "Converting " << res_names[i] << " to " << res_type << std::endl;
+
+				ofs << "@echo Processing: " << res_names[i] << std::endl;
+
+				ofs << "@echo off" << std::endl << std::endl;
+				ofs << "HDRCompressor \"" << res_names[i] << "\" " << y_fmt << ' ' << c_fmt << std::endl;
+				ofs << "@echo on" << std::endl << std::endl;
 			}
-			else if (caps.bc3_support)
-			{
-				ofs << "NormalMapCompressor temp.dds \"" << res_names[i] << "\" BC3" << std::endl;
-			}
-			else
-			{
-				ofs << "copy temp.dds \"" << res_names[i] << "\"" << std::endl;
-			}
-			ofs << "del temp.dds" << std::endl;
 		}
-	}
-	else if ("bump" == res_type)
-	{
-		for (size_t i = 0; i < res_names.size(); ++ i)
+		else if (CT_HASH("effect") == res_type_hash)
 		{
-			ofs << "Bump2Normal \"" << res_names[i] << "\" temp.dds 0.4" << std::endl;
-			ofs << "Mipmapper temp.dds" << std::endl; 
-			if (caps.bc5_support)
+			for (size_t i = 0; i < res_names.size(); ++ i)
 			{
-				ofs << "NormalMapCompressor temp.dds \"" << res_names[i] << "\" BC5" << std::endl;
+				std::cout << "Converting " << res_names[i] << " to " << res_type << std::endl;
+
+				ofs << "@echo Processing: " << res_names[i] << std::endl;
+
+				ofs << "@echo off" << std::endl << std::endl;
+				ofs << "FXMLJIT " << platform << " \"" << res_names[i] << "\"" << std::endl;
+				ofs << "@echo on" << std::endl << std::endl;
 			}
-			else if (caps.bc3_support)
-			{
-				ofs << "NormalMapCompressor temp.dds \"" << res_names[i] << "\" BC3" << std::endl;
-			}
-			else
-			{
-				ofs << "copy temp.dds \"" << res_names[i] << "\"" << std::endl;
-			}
-			ofs << "del temp.dds" << std::endl;
 		}
-	}
-	else if ("cubemap" == res_type)
-	{
-		std::string y_fmt;
-		std::string c_fmt;
-		if (caps.r16_support)
+		else
 		{
-			y_fmt = "R16";
-		}
-		else if (caps.r16f_support)
-		{
-			y_fmt = "R16F";
-		}
-		if (caps.bc5_support)
-		{
-			c_fmt = "BC5";
-		}
-		else if (caps.bc3_support)
-		{
-			c_fmt = "BC3";
+			std::cout << "Error: Unknown resource type." << std::endl;
 		}
 
-		for (size_t i = 0; i < res_names.size(); ++ i)
-		{
-			
-			ofs << "HDRCompressor \"" << res_names[i] << "\" " << y_fmt << ' ' << c_fmt << std::endl;
-		}
-	}
-	else if ("model" == res_type)
-	{
-		for (size_t i = 0; i < res_names.size(); ++ i)
-		{
-			ofs << "MeshMLJIT -I \"" << res_names[i] << "\" -P " << caps.platform << std::endl;
-		}
-	}
-	else if ("effect" == res_type)
-	{
-		for (size_t i = 0; i < res_names.size(); ++ i)
-		{
-			ofs << "FXMLJIT " << caps.platform << " \"" << res_names[i] << "\"" << std::endl;
-		}
-	}
+		ofs.close();
 
-	ofs.close();
+		if ((res_type_hash != CT_HASH("cubemap")) && (res_type_hash != CT_HASH("model")) && (res_type_hash != CT_HASH("effect")))
+		{
+			int err = system("convert.bat");
+			KFL_UNUSED(err);
+		}
 
-	if ((res_type != "cubemap") && (res_type != "model") && (res_type != "effect"))
-	{
-		system("convert.bat");
-		system("del convert.bat");
+		int err = system("del convert.bat");
+		KFL_UNUSED(err);
 	}
 }
 
 int main(int argc, char* argv[])
 {
-	ResLoader::Instance().AddPath("../../Tools/media/PlatformDeployer");
-
 	std::vector<std::string> res_names;
 	std::string res_type;
 	std::string platform;
 
-	boost::program_options::options_description desc("Allowed options");
-	desc.add_options()
-		("help,H", "Produce help message")
-		("input-name,I", boost::program_options::value<std::string>(), "Input resource name.")
-		("type,T", boost::program_options::value<std::string>(), "Resource type.")
-		("platform,P", boost::program_options::value<std::string>(), "Platform name.")
-		("version,v", "Version.");
+	cxxopts::Options options("ImageConv", "KlayGE PlatformDeployer");
+	options.add_options()
+		("H,help", "Produce help message.")
+		("I,input-name", "Input resource name.", cxxopts::value<std::string>())
+		("T,type", "Resource type.", cxxopts::value<std::string>())
+		("P,platform", "Platform name.", cxxopts::value<std::string>())
+		("v,version", "Version.");
 
-	boost::program_options::variables_map vm;
-	boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
-	boost::program_options::notify(vm);
+	int const argc_backup = argc;
+	auto vm = options.parse(argc, argv);
 
-	if ((argc <= 1) || (vm.count("help") > 0))
+	if ((argc_backup <= 1) || (vm.count("help") > 0))
 	{
-		cout << desc << endl;
+		cout << options.help() << endl;
+		Context::Destroy();
 		return 1;
 	}
 	if (vm.count("version") > 0)
 	{
-		cout << "KlayGE PlatformDeployer, Version 1.0.0" << endl;
+		cout << "KlayGE PlatformDeployer, Version 2.0.0" << endl;
+		Context::Destroy();
 		return 1;
 	}
 	if (vm.count("input-name") > 0)
 	{
 		std::string input_name_str = vm["input-name"].as<std::string>();
 
-		boost::char_separator<char> sep("", ",;");
-		boost::tokenizer<boost::char_separator<char> > tok(input_name_str, sep);
-		for (KLAYGE_AUTO(beg, tok.begin()); beg != tok.end(); ++ beg)
+		std::vector<std::string_view> tokens = StringUtil::Split(input_name_str, StringUtil::IsAnyOf(",;"));
+		for (auto& arg : tokens)
 		{
-			std::string arg = *beg;
-			if ((std::string::npos == arg.find("*")) && (std::string::npos == arg.find("?")))
+			arg = StringUtil::Trim(arg);
+			if ((std::string::npos == arg.find('*')) && (std::string::npos == arg.find('?')))
 			{
-				res_names.push_back(arg);
+				res_names.push_back(std::string(arg));
 			}
 			else
 			{
-				regex const filter(DosWildcardToRegex(arg));
+				filesystem::path arg_path(arg.begin(), arg.end());
+				auto const parent = arg_path.parent_path();
+				auto const file_name = arg_path.filename();
+
+				std::regex const filter(DosWildcardToRegex(file_name.string()));
 
 				filesystem::directory_iterator end_itr;
-				for (filesystem::directory_iterator i("."); i != end_itr; ++ i)
+				for (filesystem::directory_iterator i(parent); i != end_itr; ++ i)
 				{
 					if (filesystem::is_regular_file(i->status()))
 					{
-						smatch what;
-#ifdef KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT
-						std::string const name = i->path().filename();
-#else
+						std::smatch what;
 						std::string const name = i->path().filename().string();
-#endif
-						if (regex_match(name, what, filter))
+						if (std::regex_match(name, what, filter))
 						{
-							res_names.push_back(name);
+							res_names.push_back((parent / name).string());
 						}
 					}
 				}
@@ -389,6 +307,8 @@ int main(int argc, char* argv[])
 	else
 	{
 		cout << "Need input resources names." << endl;
+		cout << options.help() << endl;
+		Context::Destroy();
 		return 1;
 	}
 	if (vm.count("type") > 0)
@@ -397,14 +317,10 @@ int main(int argc, char* argv[])
 	}
 	else
 	{
-#ifdef KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT
-		std::string ext_name = filesystem::path(res_names[0]).extension();
-#else
 		std::string ext_name = filesystem::path(res_names[0]).extension().string();
-#endif
 		if (".dds" == ext_name)
 		{
-			res_type = "diffuse";
+			res_type = "albedo";
 		}
 		else if (".meshml" == ext_name)
 		{
@@ -413,6 +329,7 @@ int main(int argc, char* argv[])
 		else
 		{
 			cout << "Need resource type name." << endl;
+			Context::Destroy();
 			return 1;
 		}
 	}
@@ -425,8 +342,8 @@ int main(int argc, char* argv[])
 		platform = "d3d_11_0";
 	}
 
-	boost::algorithm::to_lower(res_type);
-	boost::algorithm::to_lower(platform);
+	StringUtil::ToLower(res_type);
+	StringUtil::ToLower(platform);
 
 	if (("pc_dx11" == platform) || ("pc_dx10" == platform) || ("pc_dx9" == platform) || ("win_tegra3" == platform)
 		|| ("pc_gl4" == platform) || ("pc_gl3" == platform) || ("pc_gl2" == platform)
@@ -470,8 +387,8 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	OfflineRenderDeviceCaps caps = LoadPlatformConfig(platform);
-	Deploy(res_names, res_type, caps);
+	PlatformDefinition platform_def(platform + ".plat");
+	Deploy(res_names, res_type, platform_def.device_caps, platform);
 
 	Context::Destroy();
 

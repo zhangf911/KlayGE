@@ -16,7 +16,7 @@
 
 @interface KlayGEView : UIView
 {
-	KlayGE::array<UITouch*, 16> touch_state_;
+	std::array<UITouch*, 16> touch_state_;
 	KlayGE::Window* window_;
 }
 @property(readonly) CAEAGLLayer* eagl_layer;
@@ -27,9 +27,13 @@
 
 namespace KlayGE
 {
-	Window::Window(std::string const & name, RenderSettings const & settings)
-		: active_(false), ready_(false), closed_(false)
+	Window::Window(std::string const & name, RenderSettings const & settings, void* native_wnd)
+		: active_(false), ready_(false), closed_(false), keep_screen_on_(settings.keep_screen_on),
+			dpi_scale_(1), effective_dpi_scale_(1), win_rotation_(WR_Identity)
 	{
+		KFL_UNUSED(settings);
+		KFL_UNUSED(native_wnd);
+
 		NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
 
 		CGRect bounds = [[UIScreen mainScreen] bounds];
@@ -51,15 +55,6 @@ namespace KlayGE
 		height_ = rect.size.height;
 
 		[pool release];
-	}
-
-	Window::Window(std::string const & name, RenderSettings const & settings, void* native_wnd)
-		: active_(false), ready_(false), closed_(false)
-	{
-		UNREF_PARAM(name);
-		UNREF_PARAM(settings);
-		UNREF_PARAM(native_wnd);
-		LogWarn("Unimplemented Window::Window");
 	}
 
 	Window::~Window()
@@ -106,7 +101,7 @@ namespace KlayGE
 		} while(result == kCFRunLoopRunHandledSource);
 	}
 
-	uint2 Window::GetGLKViewSize()
+	uint2 Window::GetGLKViewSize() const
 	{
 		CGRect rect = eagl_view_.frame;
 		return KlayGE::uint2(rect.size.width, rect.size.height);
@@ -149,7 +144,7 @@ namespace KlayGE
 
 - (void)touchesBegan:(NSSet*)touches withEvent:(UIEvent*)event
 {
-	UNREF_PARAM(event);
+	KFL_UNUSED(event);
 
 	for (UITouch* touch in touches)
 	{
@@ -174,7 +169,7 @@ namespace KlayGE
 
 - (void)touchesMoved:(NSSet*)touches withEvent:(UIEvent*)event
 {
-	UNREF_PARAM(event);
+	KFL_UNUSED(event);
 	for (UITouch* touch in touches)
 	{
 		int idx = -1;
@@ -197,7 +192,7 @@ namespace KlayGE
 
 - (void)touchesEnded:(NSSet*)touches withEvent:(UIEvent*)event
 {
-	UNREF_PARAM(event);
+	KFL_UNUSED(event);
 
 	for (UITouch* touch in touches)
 	{
@@ -222,7 +217,7 @@ namespace KlayGE
 
 - (void)touchesCancelled:(NSSet*)touches withEvent:(UIEvent*)event
 {
-	UNREF_PARAM(event);
+	KFL_UNUSED(event);
 
 	for (UITouch* touch in touches)
 	{

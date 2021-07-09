@@ -35,21 +35,18 @@
 
 #include <vector>
 #include <istream>
+#include <unordered_map>
 
 #ifndef KFONT_SOURCE
 	#define KLAYGE_LIB_NAME kfont
 	#include <KFL/Detail/AutoLink.hpp>
 #endif	// KFONT_SOURCE
 
-#ifdef KLAYGE_HAS_DECLSPEC
-	#ifdef KFONT_SOURCE		// Build dll
-		#define KFONT_API __declspec(dllexport)
-	#else							// Use dll
-		#define KFONT_API __declspec(dllimport)
-	#endif
-#else
-	#define KFONT_API
-#endif // KFONT_HAS_DECLSPEC
+#ifdef KFONT_SOURCE		// Build dll
+	#define KFONT_API KLAYGE_SYMBOL_EXPORT
+#else							// Use dll
+	#define KFONT_API KLAYGE_SYMBOL_IMPORT
+#endif
 
 namespace KlayGE
 {
@@ -68,11 +65,12 @@ namespace KlayGE
 		int16_t base;
 		int16_t scale;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(kfont_header) == 28);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 	#pragma pack(pop)
 #endif
 
-	class KFONT_API KFont
+	class KFONT_API KFont final
 	{
 	public:
 #ifdef KLAYGE_HAS_STRUCT_PACK
@@ -85,15 +83,13 @@ namespace KlayGE
 			uint16_t width;
 			uint16_t height;
 		};
+		KLAYGE_STATIC_ASSERT(sizeof(font_info) == 8);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 	#pragma pack(pop)
 #endif
 
 	public:
-		KFont()
-			: distances_addr_(1, 0)
-		{
-		}
+		KFont();
 		
 		bool Load(std::string const & file_name);
 		bool Load(ResIdentifierPtr const & kfont_input);
@@ -122,9 +118,9 @@ namespace KlayGE
 		uint32_t char_size_;
 		int16_t dist_base_;
 		int16_t dist_scale_;
-		unordered_map<int32_t, std::pair<int32_t, uint32_t> > char_index_advance_;
+		std::unordered_map<int32_t, std::pair<int32_t, uint32_t>> char_index_advance_;
 		std::vector<font_info> char_info_;
-		std::vector<size_t> distances_addr_;
+		std::vector<size_t> distances_addr_{1, 0};
 		std::vector<uint8_t> distances_lzma_;
 		ResIdentifierPtr kfont_input_;
 		int64_t distances_lzma_start_;

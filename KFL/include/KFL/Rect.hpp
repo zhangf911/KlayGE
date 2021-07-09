@@ -43,13 +43,13 @@
 namespace KlayGE
 {
 	template <typename T>
-	class Rect_T : boost::addable<Rect_T<T>,
-						boost::addable2<Rect_T<T>, Vector_T<T, 2>,
-						boost::subtractable<Rect_T<T>,
-						boost::subtractable2<Rect_T<T>, Vector_T<T, 2>,
-						boost::andable<Rect_T<T>,
-						boost::orable<Rect_T<T>,
-						boost::equality_comparable<Rect_T<T> > > > > > > >
+	class Rect_T final : boost::addable<Rect_T<T>,
+							boost::addable2<Rect_T<T>, Vector_T<T, 2>,
+							boost::subtractable<Rect_T<T>,
+							boost::subtractable2<Rect_T<T>, Vector_T<T, 2>,
+							boost::andable<Rect_T<T>,
+							boost::orable<Rect_T<T>,
+							boost::equality_comparable<Rect_T<T>>>>>>>>
 	{
 		template <typename U>
 		friend class Rect_T;
@@ -69,97 +69,107 @@ namespace KlayGE
 		enum { elem_num = 4 };
 
 	public:
-		Rect_T()
+		constexpr Rect_T() noexcept
 		{
 		}
-		explicit Rect_T(T const * rhs);
-		Rect_T(Rect_T const & rhs)
+		explicit constexpr Rect_T(T const * rhs) noexcept
+			: rect_(rhs)
+		{
+		}
+		// Leave them in header due to a compiling issue under GCC
+		Rect_T(Rect_T const & rhs) noexcept
 			: rect_(rhs.rect_)
 		{
 		}
 		template <typename U>
-		Rect_T(Rect_T<U> const & rhs)
+		constexpr Rect_T(Rect_T<U> const & rhs) noexcept
 			: rect_(rhs.rect_)
 		{
 		}
-		Rect_T(T left, T top, T right, T bottom);
+		Rect_T(Rect_T&& rhs) noexcept;
+		constexpr Rect_T(T left, T top, T right, T bottom) noexcept
+			: rect_(left, top, right, bottom)
+		{
+		}
 
 		// 取向量
-		reference left()
+		reference left() noexcept
 		{
 			return rect_[0];
 		}
-		const_reference left() const
+		constexpr const_reference left() const noexcept
 		{
 			return rect_[0];
 		}
-		reference top()
+		reference top() noexcept
 		{
 			return rect_[1];
 		}
-		const_reference top() const
+		constexpr const_reference top() const noexcept
 		{
 			return rect_[1];
 		}
-		reference right()
+		reference right() noexcept
 		{
 			return rect_[2];
 		}
-		const_reference right() const
+		constexpr const_reference right() const noexcept
 		{
 			return rect_[2];
 		}
-		reference bottom()
+		reference bottom() noexcept
 		{
 			return rect_[3];
 		}
-		const_reference bottom() const
+		constexpr const_reference bottom() const noexcept
 		{
 			return rect_[3];
 		}
 
 		// 赋值操作符
 		template <typename U>
-		Rect_T const & operator+=(Vector_T<U, 2> const & rhs);
+		Rect_T const & operator+=(Vector_T<U, 2> const & rhs) noexcept;
 		template <typename U>
-		Rect_T const & operator-=(Vector_T<U, 2> const & rhs);
+		Rect_T const & operator-=(Vector_T<U, 2> const & rhs) noexcept;
 		template <typename U>
-		Rect_T const & operator+=(Rect_T<U> const & rhs);
+		Rect_T const & operator+=(Rect_T<U> const & rhs) noexcept;
 		template <typename U>
-		Rect_T const & operator-=(Rect_T<U> const & rhs);
+		Rect_T const & operator-=(Rect_T<U> const & rhs) noexcept;
 		template <typename U>
-		Rect_T const & operator&=(Rect_T<U> const & rhs);
+		Rect_T const & operator&=(Rect_T<U> const & rhs) noexcept;
 		template <typename U>
-		Rect_T const & operator|=(Rect_T<U> const & rhs);
+		Rect_T const & operator|=(Rect_T<U> const & rhs) noexcept;
 
-		Rect_T& operator=(Rect_T const & rhs)
+		// Leave them in header due to a compiling issue under GCC
+		Rect_T& operator=(Rect_T const & rhs) noexcept
 		{
 			if (this != &rhs)
 			{
 				rect_ = rhs.rect_;
 			}
-			return *this;
+		return *this;
 		}
 		template <typename U>
-		Rect_T& operator=(Rect_T<U> const & rhs)
+		Rect_T& operator=(Rect_T<U> const & rhs) noexcept
 		{
 			rect_ = rhs.rect_;
 			return *this;
 		}
+		Rect_T& operator=(Rect_T&& rhs) noexcept;
 
 		// 一元操作符
-		Rect_T const operator+() const;
-		Rect_T const operator-() const;
+		Rect_T const operator+() const noexcept;
+		Rect_T const operator-() const noexcept;
 
 		// 属性
-		T Width() const;
-		T Height() const;
-		Size_T<T> const Size() const;
-		bool IsEmpty() const;
+		T Width() const noexcept;
+		T Height() const noexcept;
+		Size_T<T> const Size() const noexcept;
+		bool IsEmpty() const noexcept;
 
-		bool operator==(Rect_T<T> const & rhs) const;
+		bool operator==(Rect_T<T> const & rhs) const noexcept;
 
-		bool PtInRect(Vector_T<T, 2> const & pt) const;
+		bool PtInRect(Vector_T<T, 2> const & pt) const noexcept;
 
 	private:
 		Vector_T<T, elem_num> rect_;

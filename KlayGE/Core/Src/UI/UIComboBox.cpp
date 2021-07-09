@@ -13,7 +13,6 @@
 #include <KlayGE/KlayGE.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
-#include <KlayGE/Window.hpp>
 #include <KlayGE/Input.hpp>
 #include <KlayGE/Font.hpp>
 
@@ -22,49 +21,16 @@
 namespace KlayGE
 {
 	UIComboBox::UIComboBox(UIDialogPtr const & dialog)
-						: UIControl(UIComboBox::Type, dialog),
-							selected_(-1), focused_(-1),
-							drop_height_(100), scroll_bar_(dialog),
-                            sb_width_(16), opened_(false),
-							pressed_(false)
+						: UIComboBox(UIComboBox::Type, dialog)
 	{
-		this->InitDefaultElements();
-
-		this->GetDialog()->InitControl(scroll_bar_);
 	}
 
 	UIComboBox::UIComboBox(uint32_t type, UIDialogPtr const & dialog)
 						: UIControl(type, dialog),
 							selected_(-1), focused_(-1),
 							drop_height_(100), scroll_bar_(dialog),
-                            sb_width_(16), opened_(false),
-							pressed_(false)
-	{
-		this->InitDefaultElements();
-
-		this->GetDialog()->InitControl(scroll_bar_);
-	}
-
-	UIComboBox::UIComboBox(UIDialogPtr const & dialog, int ID, int4 const & coord_size, uint8_t hotkey, bool bIsDefault)
-						: UIControl(UIComboBox::Type, dialog),
-							selected_(-1), focused_(-1),
-							drop_height_(100), scroll_bar_(dialog),
 							sb_width_(16), opened_(false),
 							pressed_(false)
-	{
-		this->InitDefaultElements();
-
-		this->GetDialog()->InitControl(scroll_bar_);
-
-		// Set the ID and list index
-		this->SetID(ID);
-		this->SetLocation(coord_size.x(), coord_size.y());
-		this->SetSize(coord_size.z(), coord_size.w());
-		this->SetHotkey(hotkey);
-		this->SetIsDefault(bIsDefault);
-	}
-
-	void UIComboBox::InitDefaultElements()
 	{
 		UIElement Element;
 
@@ -79,7 +45,7 @@ namespace KlayGE
 			Element.FontColor().States[UICS_Pressed] = Color(0, 0, 0, 1);
 			Element.FontColor().States[UICS_Disabled] = Color(200.0f / 255, 200.0f / 255, 200.0f / 255, 200.0f / 255);
 
-			elements_.push_back(MakeSharedPtr<UIElement>(Element));
+			elements_.push_back(MakeUniquePtr<UIElement>(Element));
 		}
 
 		// Button
@@ -90,7 +56,7 @@ namespace KlayGE
 			Element.TextureColor().States[UICS_Focus] = Color(1, 1, 1, 200.0f / 255);
 			Element.TextureColor().States[UICS_Disabled] = Color(1, 1, 1, 70.0f / 255);
 
-			elements_.push_back(MakeSharedPtr<UIElement>(Element));
+			elements_.push_back(MakeUniquePtr<UIElement>(Element));
 		}
 
 		// Dropdown
@@ -98,7 +64,7 @@ namespace KlayGE
 			Element.SetTexture(0, UIManager::Instance().ElementTextureRect(UICT_ComboBox, 2));
 			Element.SetFont(0, Color(0, 0, 0, 1), Font::FA_Hor_Left | Font::FA_Ver_Top);
 
-			elements_.push_back(MakeSharedPtr<UIElement>(Element));
+			elements_.push_back(MakeUniquePtr<UIElement>(Element));
 		}
 
 		// Selection
@@ -106,8 +72,21 @@ namespace KlayGE
 			Element.SetTexture(0, UIManager::Instance().ElementTextureRect(UICT_ComboBox, 3));
 			Element.SetFont(0, Color(1, 1, 1, 1), Font::FA_Hor_Left | Font::FA_Ver_Top);
 
-			elements_.push_back(MakeSharedPtr<UIElement>(Element));
+			elements_.push_back(MakeUniquePtr<UIElement>(Element));
 		}
+
+		this->GetDialog()->InitControl(scroll_bar_);
+	}
+
+	UIComboBox::UIComboBox(UIDialogPtr const & dialog, int ID, int4 const & coord_size, uint8_t hotkey, bool bIsDefault)
+						: UIComboBox(dialog)
+	{
+		// Set the ID and list index
+		this->SetID(ID);
+		this->SetLocation(coord_size.x(), coord_size.y());
+		this->SetSize(coord_size.z(), coord_size.w());
+		this->SetHotkey(hotkey);
+		this->SetIsDefault(bIsDefault);
 	}
 
 	UIComboBox::~UIComboBox()
@@ -117,18 +96,16 @@ namespace KlayGE
 
 	void UIComboBox::SetTextColor(Color const & color)
 	{
-		UIElementPtr pElement = elements_[0];
-
-		if (pElement)
+		auto main_element = elements_[0].get();
+		if (main_element)
 		{
-			pElement->FontColor().States[UICS_Normal] = color;
+			main_element->FontColor().States[UICS_Normal] = color;
 		}
 
-		pElement = elements_[2];
-
-		if (pElement)
+		auto dropdown_element = elements_[2].get();
+		if (dropdown_element)
 		{
-			pElement->FontColor().States[UICS_Normal] = color;
+			dropdown_element->FontColor().States[UICS_Normal] = color;
 		}
 	}
 
@@ -266,7 +243,7 @@ namespace KlayGE
 			// Determine which item has been selected
 			for (size_t i = 0; i < items_.size(); ++ i)
 			{
-				shared_ptr<UIComboBoxItem> const & pItem = items_[i];
+				std::shared_ptr<UIComboBoxItem> const & pItem = items_[i];
 				if (pItem->bVisible && pItem->rcActive.PtInRect(pt))
 				{
 					focused_ = static_cast<int>(i);
@@ -315,7 +292,7 @@ namespace KlayGE
 				// Determine which item has been selected
 				for (size_t i = scroll_bar_.GetTrackPos(); i < items_.size(); ++ i)
 				{
-					shared_ptr<UIComboBoxItem> const & pItem = items_[i];
+					std::shared_ptr<UIComboBoxItem> const & pItem = items_[i];
 					if (pItem -> bVisible && pItem->rcActive.PtInRect(pt))
 					{
 						focused_ = static_cast<int>(i);
@@ -419,8 +396,7 @@ namespace KlayGE
 			iState = UICS_Hidden;
 		}
 
-		// Dropdown box
-		UIElementPtr pElement = elements_[2];
+		auto& dropdown_element = *elements_[2];
 
 		// If we have not initialized the scroll bar page size,
 		// do that now.
@@ -428,9 +404,10 @@ namespace KlayGE
 		if (!bSBInit)
 		{
 			// Update the page size of the scroll bar
-			if (UIManager::Instance().GetFontSize(pElement->FontIndex()) != 0)
+			if (UIManager::Instance().GetFontSize(dropdown_element.FontIndex()) != 0)
 			{
-				scroll_bar_.SetPageSize(static_cast<size_t>(dropdown_text_rc_.Height() / UIManager::Instance().GetFontSize(pElement->FontIndex())));
+				scroll_bar_.SetPageSize(
+					static_cast<size_t>(dropdown_text_rc_.Height() / UIManager::Instance().GetFontSize(dropdown_element.FontIndex())));
 			}
 			else
 			{
@@ -446,8 +423,8 @@ namespace KlayGE
 		}
 
 		// Blend current color
-		pElement->TextureColor().SetState(iState);
-		pElement->FontColor().SetState(iState);
+		dropdown_element.TextureColor().SetState(iState);
+		dropdown_element.FontColor().SetState(iState);
 
 		float depth_bias = 0.0f;
 		if (opened_)
@@ -455,15 +432,15 @@ namespace KlayGE
 			depth_bias = -0.1f;
 		}
 
-		this->GetDialog()->DrawSprite(*pElement, dropdown_rc_, depth_bias);
+		this->GetDialog()->DrawSprite(dropdown_element, dropdown_rc_, depth_bias);
 
 		// Selection outline
-		UIElementPtr pSelectionElement = elements_[3];
-		pSelectionElement->TextureColor().Current = pElement->TextureColor().Current;
-		pSelectionElement->FontColor().Current = pSelectionElement->FontColor().States[UICS_Normal];
+		auto& selection_element = *elements_[3];
+		selection_element.TextureColor().Current = dropdown_element.TextureColor().Current;
+		selection_element.FontColor().Current = selection_element.FontColor().States[UICS_Normal];
 
-		FontPtr const & font = this->GetDialog()->GetFont(pElement->FontIndex());
-		uint32_t font_size = static_cast<uint32_t>(this->GetDialog()->GetFontSize(pElement->FontIndex()) + 0.5f);
+		FontPtr const & font = this->GetDialog()->GetFont(dropdown_element.FontIndex());
+		uint32_t font_size = static_cast<uint32_t>(this->GetDialog()->GetFontSize(dropdown_element.FontIndex()) + 0.5f);
 		if (font)
 		{
 			int curY = dropdown_text_rc_.top();
@@ -471,7 +448,7 @@ namespace KlayGE
 
 			for (size_t i = scroll_bar_.GetTrackPos(); i < items_.size(); ++ i)
 			{
-				shared_ptr<UIComboBoxItem> const & pItem = items_[i];
+				std::shared_ptr<UIComboBoxItem> const & pItem = items_[i];
 
 				// Make sure there's room left in the dropdown
 				nRemainingHeight -= font_size;
@@ -495,12 +472,12 @@ namespace KlayGE
 					if (static_cast<int>(i) == focused_)
 					{
 						IRect rc(dropdown_rc_.left(), pItem->rcActive.top() - 2, dropdown_rc_.right(), pItem->rcActive.bottom() + 2);
-						this->GetDialog()->DrawSprite(*pSelectionElement, rc, depth_bias);
-						this->GetDialog()->DrawString(pItem->strText, *pSelectionElement, pItem->rcActive, false, depth_bias);
+						this->GetDialog()->DrawSprite(selection_element, rc, depth_bias);
+						this->GetDialog()->DrawString(pItem->strText, selection_element, pItem->rcActive, false, depth_bias);
 					}
 					else
 					{
-						this->GetDialog()->DrawString(pItem->strText, *pElement, pItem->rcActive, false, depth_bias);
+						this->GetDialog()->DrawString(pItem->strText, dropdown_element, pItem->rcActive, false, depth_bias);
 					}
 				}
 			}
@@ -508,68 +485,59 @@ namespace KlayGE
 
 		iState = UICS_Normal;
 
-		if (!visible_)
+		if (visible_)
 		{
-			iState = UICS_Hidden;
-		}
-		else
-		{
-			if (!enabled_)
-			{
-				iState = UICS_Disabled;
-			}
-			else
+			if (enabled_)
 			{
 				if (pressed_)
 				{
 					iState = UICS_Pressed;
 				}
-				else
+				else if (is_mouse_over_)
 				{
-					if (is_mouse_over_)
-					{
-						iState = UICS_MouseOver;
-					}
-					else
-					{
-						if (has_focus_)
-						{
-							iState = UICS_Focus;
-						}
-					}
+					iState = UICS_MouseOver;
+				}
+				else if (has_focus_)
+				{
+					iState = UICS_Focus;
 				}
 			}
+			else
+			{
+				iState = UICS_Disabled;
+			}
+		}
+		else
+		{
+			iState = UICS_Hidden;
 		}
 
-		// Button
-		pElement = elements_[1];
+		auto& button_element = *elements_[1];
 
-		// Blend current color
-		pElement->TextureColor().SetState(iState);
+		button_element.TextureColor().SetState(iState);
 
 		IRect rcWindow = button_rc_;
-		this->GetDialog()->DrawSprite(*pElement, rcWindow, depth_bias);
+		this->GetDialog()->DrawSprite(button_element, rcWindow, depth_bias);
 
 		if (opened_)
 		{
 			iState = UICS_Pressed;
 		}
 
-		// Main text box
-		pElement = elements_[0];
+		auto& text_element = *elements_[0];
 
 		// Blend current color
-		pElement->TextureColor().SetState(iState);
-		pElement->FontColor().SetState(iState);
+		text_element.TextureColor().SetState(iState);
+		text_element.FontColor().SetState(iState);
 
-		this->GetDialog()->DrawSprite(*pElement, text_rc_, depth_bias);
+		this->GetDialog()->DrawSprite(text_element, text_rc_, depth_bias);
 
 		if ((selected_ >= 0) && (selected_ < static_cast<int>(items_.size())))
 		{
-			shared_ptr<UIComboBoxItem> const & pItem = items_[selected_];
+			std::shared_ptr<UIComboBoxItem> const & pItem = items_[selected_];
 			if (pItem)
 			{
-				this->GetDialog()->DrawString(pItem->strText, *pElement, text_rc_, false, depth_bias);
+				this->GetDialog()->DrawString(pItem->strText, text_element, text_rc_, false, depth_bias);
 			}
 		}
 	}
@@ -579,42 +547,8 @@ namespace KlayGE
 		BOOST_ASSERT(!strText.empty());
 
 		// Create a new item and set the data
-		shared_ptr<UIComboBoxItem> pItem = MakeSharedPtr<UIComboBoxItem>();
+		std::shared_ptr<UIComboBoxItem> pItem = MakeSharedPtr<UIComboBoxItem>();
 		pItem->strText = strText;
-		pItem->rcActive = IRect(0, 0, 0, 0);
-		pItem->bVisible = false;
-
-		int ret = static_cast<int>(items_.size());
-
-		items_.push_back(pItem);
-
-		// Update the scroll bar with new range
-		scroll_bar_.SetTrackRange(0, items_.size());
-
-		// If this is the only item in the list, it's selected
-		if (1 == this->GetNumItems())
-		{
-			selected_ = 0;
-			focused_ = 0;
-			this->OnSelectionChangedEvent()(*this);
-		}
-
-		return ret;
-	}
-	
-	void UIComboBox::SetItemData(int nIndex, boost::any const & data)
-	{
-		items_[nIndex]->data = data;
-	}
-
-	int UIComboBox::AddItem(std::wstring const & strText, boost::any const & data)
-	{
-		BOOST_ASSERT(!strText.empty());
-
-		// Create a new item and set the data
-		shared_ptr<UIComboBoxItem> pItem = MakeSharedPtr<UIComboBoxItem>();
-		pItem->strText = strText;
-		pItem->data = data;
 		pItem->rcActive = IRect(0, 0, 0, 0);
 		pItem->bVisible = false;
 
@@ -676,21 +610,11 @@ namespace KlayGE
 		return -1;
 	}
 
-	boost::any const UIComboBox::GetSelectedData() const
+	std::shared_ptr<UIComboBoxItem> UIComboBox::GetSelectedItem() const
 	{
 		if (selected_ < 0)
 		{
-			return boost::any();
-		}
-
-		return items_[selected_]->data;
-	}
-
-	shared_ptr<UIComboBoxItem> UIComboBox::GetSelectedItem() const
-	{
-		if (selected_ < 0)
-		{
-			return shared_ptr<UIComboBoxItem>();
+			return std::shared_ptr<UIComboBoxItem>();
 		}
 
 		return items_[selected_];
@@ -699,30 +623,6 @@ namespace KlayGE
 	int UIComboBox::GetSelectedIndex() const
 	{
 		return selected_;
-	}
-
-	boost::any const UIComboBox::GetItemData(std::wstring const & strText) const
-	{
-		int index = this->FindItem(strText);
-		if (index == -1)
-		{
-			return boost::any();
-		}
-
-		shared_ptr<UIComboBoxItem> const & pItem = items_[index];
-		if (!pItem)
-		{
-			return boost::any();
-		}
-
-		return pItem->data;
-	}
-
-	boost::any const UIComboBox::GetItemData(int nIndex) const
-	{
-		BOOST_ASSERT((nIndex >= 0) && (nIndex < static_cast<int>(items_.size())));
-
-		return items_[nIndex]->data;
 	}
 
 	void UIComboBox::SetSelectedByIndex(uint32_t index)

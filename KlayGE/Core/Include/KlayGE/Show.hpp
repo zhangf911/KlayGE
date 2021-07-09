@@ -30,16 +30,14 @@ namespace KlayGE
 		SS_Playing,
 	};
 
-	class KLAYGE_CORE_API ShowEngine
+	class KLAYGE_CORE_API ShowEngine : boost::noncopyable
 	{
 	public:
-		ShowEngine();
-		virtual ~ShowEngine();
+		ShowEngine() noexcept;
+		virtual ~ShowEngine() noexcept;
 
 		void Suspend();
 		void Resume();
-
-		static ShowEnginePtr NullObject();
 
 		bool CanPlay() const;
 		bool CanStop() const;
@@ -66,8 +64,8 @@ namespace KlayGE
 		virtual void DoPause() = 0;
 
 	protected:
-		ShowState state_;
-		bool resume_playing_;
+		ShowState state_{SS_Uninit};
+		bool resume_playing_{false};
 	};
 }
 

@@ -1,10 +1,9 @@
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Font.hpp>
 #include <KlayGE/Renderable.hpp>
-#include <KlayGE/RenderableHelper.hpp>
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderEffect.hpp>
 #include <KlayGE/FrameBuffer.hpp>
@@ -14,16 +13,16 @@
 #include <KlayGE/RenderSettings.hpp>
 #include <KlayGE/Mesh.hpp>
 #include <KlayGE/GraphicsBuffer.hpp>
-#include <KlayGE/SceneObjectHelper.hpp>
 #include <KlayGE/UI.hpp>
 #include <KlayGE/Input.hpp>
 
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/InputFactory.hpp>
 
-#include <vector>
-#include <sstream>
 #include <fstream>
+#include <iterator>
+#include <sstream>
+#include <vector>
 
 #include "SampleCommon.hpp"
 #include "Text.hpp"
@@ -70,17 +69,6 @@ TextApp::TextApp()
 	ResLoader::Instance().AddPath("../../Samples/media/Text");
 }
 
-bool TextApp::ConfirmDevice() const
-{
-	RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
-	RenderDeviceCaps const & caps = re.DeviceCaps();
-	if (caps.max_shader_model < 2)
-	{
-		return false;
-	}
-	return true;
-}
-
 void TextApp::OnCreate()
 {
 	font_ = SyncLoadFont("gkai00mp.kfont");
@@ -107,13 +95,17 @@ void TextApp::OnCreate()
 
 	InputEngine& inputEngine(Context::Instance().InputFactoryInstance().InputEngineInstance());
 	InputActionMap actionMap;
-	actionMap.AddActions(actions, actions + sizeof(actions) / sizeof(actions[0]));
+	actionMap.AddActions(actions, actions + std::size(actions));
 
 	action_handler_t input_handler = MakeSharedPtr<input_signal>();
-	input_handler->connect(KlayGE::bind(&TextApp::InputHandler, this, KlayGE::placeholders::_1, KlayGE::placeholders::_2));
+	input_handler->Connect(
+		[this](InputEngine const & sender, InputAction const & action)
+		{
+			this->InputHandler(sender, action);
+		});
 	inputEngine.ActionMap(actionMap, input_handler);
 
-	UIManager::Instance().Load(ResLoader::Instance().Open("Text.uiml"));
+	UIManager::Instance().Load(*ResLoader::Instance().Open("Text.uiml"));
 }
 
 void TextApp::OnResize(uint32_t width, uint32_t height)
@@ -154,8 +146,7 @@ void TextApp::InputHandler(InputEngine const & /*sender*/, InputAction const & a
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid input type");
 		}
 		break;
 
@@ -165,7 +156,7 @@ void TextApp::InputHandler(InputEngine const & /*sender*/, InputAction const & a
 		case InputEngine::IDT_Mouse:
 			{
 				InputMouseActionParamPtr param = checked_pointer_cast<InputMouseActionParam>(action.second);
-				float f = 1.0f + (param->wheel_delta * 0.1f) / 120;
+				float f = 1.0f + MathLib::clamp(param->wheel_delta / 1200.0f, -0.5f, 0.5f);
 				float2 p = float2(-param->abs_coord) / scale_ + position_;
 				float2 new_position = (position_ - p * (1 - f)) / f;
 				float new_scale = scale_ * f;
@@ -187,7 +178,7 @@ void TextApp::InputHandler(InputEngine const & /*sender*/, InputAction const & a
 				}
 				else
 				{
-					f = 1.0f + (param->wheel_delta * 0.1f) / 120;
+					f = 1.0f + MathLib::clamp(param->wheel_delta / 1200.0f, -0.5f, 0.5f);
 				}
 				float2 p = float2(-param->center) / scale_ + position_;
 				float2 new_position = (position_ - p * (1 - f)) / f;
@@ -201,8 +192,7 @@ void TextApp::InputHandler(InputEngine const & /*sender*/, InputAction const & a
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid input type");
 		}
 		break;
 

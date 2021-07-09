@@ -33,7 +33,7 @@
 
 namespace KlayGE
 {
-	class OCTree : public SceneManager
+	class OCTree final : public SceneManager
 	{
 	public:
 		OCTree();
@@ -41,19 +41,20 @@ namespace KlayGE
 		void MaxTreeDepth(uint32_t max_tree_depth);
 		uint32_t MaxTreeDepth() const;
 
-		virtual void ClipScene() KLAYGE_OVERRIDE;
+		void ClipScene() override;
 
-		virtual BoundOverlap AABBVisible(AABBox const & aabb) const KLAYGE_OVERRIDE;
-		virtual BoundOverlap OBBVisible(OBBox const & obb) const KLAYGE_OVERRIDE;
-		virtual BoundOverlap SphereVisible(Sphere const & sphere) const KLAYGE_OVERRIDE;
+		BoundOverlap AABBVisible(AABBox const & aabb) const override;
+		BoundOverlap OBBVisible(OBBox const & obb) const override;
+		BoundOverlap SphereVisible(Sphere const & sphere) const override;
+		BoundOverlap FrustumVisible(Frustum const& frustum) const override;
 
-		virtual void ClearObject() KLAYGE_OVERRIDE;
+		void ClearObject() override;
+
+		void OnSceneChanged() override;
 
 	private:
-		virtual void OnAddSceneObject(SceneObjectPtr const & obj) KLAYGE_OVERRIDE;
-		virtual void OnDelSceneObject(SceneObjsType::iterator iter) KLAYGE_OVERRIDE;
-		virtual void DoSuspend() KLAYGE_OVERRIDE;
-		virtual void DoResume() KLAYGE_OVERRIDE;
+		void DoSuspend() override;
+		void DoResume() override;
 
 		void DivideNode(size_t index, uint32_t curr_depth);
 		void NodeVisible(size_t index);
@@ -75,7 +76,7 @@ namespace KlayGE
 			int first_child_index;
 			BoundOverlap visible;
 
-			SceneObjsType obj_ptrs;
+			std::vector<SceneNode*> node_ptrs;
 		};
 
 		std::vector<octree_node_t> octree_;

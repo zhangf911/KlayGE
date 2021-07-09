@@ -29,67 +29,214 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
-#include <KFL/Util.hpp>
 
-#include <boost/assert.hpp>
+#include <KFL/ErrorHandling.hpp>
 
 #include <KlayGE/Script.hpp>
 
 namespace KlayGE
 {
-	class NullScriptEngine : public ScriptEngine
-	{
-	public:
-		std::wstring const & Name() const
-		{
-			static std::wstring name(L"Null Script Engine");
-			return name;
-		}
+	ScriptVariable::~ScriptVariable() noexcept = default;
 
-	private:
-		virtual void DoSuspend() KLAYGE_OVERRIDE
-		{
-		}
-		virtual void DoResume() KLAYGE_OVERRIDE
-		{
-		}
-	};
-
-	ScriptModule::ScriptModule()
+	ScriptVariable& ScriptVariable::operator=(std::string const& value)
 	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
 
-	ScriptModule::~ScriptModule()
+	ScriptVariable& ScriptVariable::operator=(std::string_view value)
 	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
 
-	boost::any ScriptModule::Value(std::string const & /*name*/)
+	ScriptVariable& ScriptVariable::operator=(char const* value)
 	{
-		return boost::any();
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
 
-	boost::any ScriptModule::Call(std::string const & /*func_name*/, const AnyDataListType& /*args*/)
+	ScriptVariable& ScriptVariable::operator=(char* value)
 	{
-		return boost::any();
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
 
-	boost::any ScriptModule::RunString(std::string const & /*script*/)
+	ScriptVariable& ScriptVariable::operator=(std::wstring const& value)
 	{
-		return boost::any();
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
 
-	// 构造函数
-	/////////////////////////////////////////////////////////////////////////////////
-	ScriptEngine::ScriptEngine()
+	ScriptVariable& ScriptVariable::operator=(std::wstring_view value)
 	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
 
-	// 析构函数
-	/////////////////////////////////////////////////////////////////////////////////
-	ScriptEngine::~ScriptEngine()
+	ScriptVariable& ScriptVariable::operator=(wchar_t const* value)
 	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
 	}
+
+	ScriptVariable& ScriptVariable::operator=(wchar_t* value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(int8_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(int16_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(int32_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(int64_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(uint8_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(uint16_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(uint32_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(uint64_t value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(float value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(double value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	ScriptVariable& ScriptVariable::operator=(std::span<ScriptVariablePtr const> value)
+	{
+		KFL_UNUSED(value);
+		KFL_UNREACHABLE("Can't be called");
+	}
+
+	bool ScriptVariable::TryValue(std::string& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(std::wstring& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(int8_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(int16_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(int32_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(int64_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(uint8_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(uint16_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(uint32_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(uint64_t& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(float& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(double& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+	bool ScriptVariable::TryValue(std::vector<ScriptVariablePtr>& value) const
+	{
+		KFL_UNUSED(value);
+		return false;
+	}
+
+
+	ScriptModule::ScriptModule() noexcept = default;
+	ScriptModule::~ScriptModule() noexcept = default;
+
+
+	ScriptEngine::ScriptEngine() noexcept = default;
+	ScriptEngine::~ScriptEngine() noexcept = default;
 
 	void ScriptEngine::Suspend()
 	{
@@ -99,19 +246,5 @@ namespace KlayGE
 	void ScriptEngine::Resume()
 	{
 		this->DoResume();
-	}
-
-	// 返回空对象
-	//////////////////////////////////////////////////////////////////////////////////
-	ScriptEnginePtr ScriptEngine::NullObject()
-	{
-		static ScriptEnginePtr obj = MakeSharedPtr<NullScriptEngine>();
-		return obj;
-	}
-
-	ScriptModulePtr ScriptEngine::CreateModule(std::string const & /*name*/)
-	{
-		static ScriptModulePtr obj = MakeSharedPtr<ScriptModule>();
-		return obj;
 	}
 }

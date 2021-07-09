@@ -19,32 +19,24 @@
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
+#include <KlayGE/Signal.hpp>
 #include <KlayGE/OpenGL/OGLFrameBuffer.hpp>
-
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4100 4512 4702 4913 6011)
-#endif
-#include <boost/signals2.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
 
 namespace KlayGE
 {
 	struct RenderSettings;
 
-	class OGLRenderWindow : public OGLFrameBuffer
+	class OGLRenderWindow final : public OGLFrameBuffer
 	{
 	public:
 		OGLRenderWindow(std::string const & name, RenderSettings const & settings);
-		~OGLRenderWindow();
+		~OGLRenderWindow() override;
 
 		void Destroy();
 
-		void SwapBuffers();
+		void SwapBuffers() override;
 
-		std::wstring const & Description() const;
+		std::wstring const & Description() const override;
 
 		void Resize(uint32_t width, uint32_t height);
 		void Reposition(uint32_t left, uint32_t top);
@@ -53,12 +45,11 @@ namespace KlayGE
 		void FullScreen(bool fs);
 
 		// Method for dealing with resize / move & 3d library
-		void WindowMovedOrResized();
+		void WindowMovedOrResized(Window const& win);
 
 	private:
-		void OnPaint(Window const & win);
-		void OnExitSizeMove(Window const & win);
-		void OnSize(Window const & win, bool active);
+		void OnExitSizeMove(Window const& win);
+		void OnSize(Window const& win, bool active);
 
 	private:
 		std::string	name_;
@@ -71,7 +62,6 @@ namespace KlayGE
 		::Display* x_display_;
 		::Window x_window_;
 		::GLXContext x_context_;
-		::GLXFBConfig* fbc_;
 #endif
 
 		bool	isFullScreen_;
@@ -80,9 +70,8 @@ namespace KlayGE
 
 		std::wstring			description_;
 
-		boost::signals2::connection on_paint_connect_;
-		boost::signals2::connection on_exit_size_move_connect_;
-		boost::signals2::connection on_size_connect_;
+		Signal::Connection on_exit_size_move_connect_;
+		Signal::Connection on_size_connect_;
 	};
 }
 

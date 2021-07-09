@@ -23,6 +23,8 @@
 
 #include <KlayGE/PreDeclare.hpp>
 
+#include <array>
+
 #include <KFL/Color.hpp>
 
 namespace KlayGE
@@ -228,6 +230,7 @@ namespace KlayGE
 
 		friend bool operator<(RasterizerStateDesc const & lhs, RasterizerStateDesc const & rhs);
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(RasterizerStateDesc) == 24);
 
 	struct KLAYGE_CORE_API DepthStencilStateDesc
 	{
@@ -237,6 +240,7 @@ namespace KlayGE
 
 		bool				front_stencil_enable;
 		CompareFunction		front_stencil_func;
+		uint16_t			front_stencil_ref;
 		uint16_t			front_stencil_read_mask;
 		uint16_t			front_stencil_write_mask;
 		StencilOperation	front_stencil_fail;
@@ -245,6 +249,7 @@ namespace KlayGE
 
 		bool				back_stencil_enable;
 		CompareFunction		back_stencil_func;
+		uint16_t			back_stencil_ref;
 		uint16_t			back_stencil_read_mask;
 		uint16_t			back_stencil_write_mask;
 		StencilOperation	back_stencil_fail;
@@ -255,27 +260,32 @@ namespace KlayGE
 
 		friend bool operator<(DepthStencilStateDesc const & lhs, DepthStencilStateDesc const & rhs);
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(DepthStencilStateDesc) == 52);
 
 	struct KLAYGE_CORE_API BlendStateDesc
 	{
+		Color blend_factor;
+		uint32_t sample_mask;
+
 		bool				alpha_to_coverage_enable;
 		bool				independent_blend_enable;
 
-		array<bool, 8>				blend_enable;
-		array<bool, 8>				logic_op_enable;
-		array<BlendOperation, 8>		blend_op;
-		array<AlphaBlendFactor, 8>	src_blend;
-		array<AlphaBlendFactor, 8>	dest_blend;
-		array<BlendOperation, 8>		blend_op_alpha;
-		array<AlphaBlendFactor, 8>	src_blend_alpha;
-		array<AlphaBlendFactor, 8>	dest_blend_alpha;
-		array<LogicOperation, 8>		logic_op;
-		array<uint8_t, 8>			color_write_mask;
+		std::array<bool, 8>				blend_enable;
+		std::array<bool, 8>				logic_op_enable;
+		std::array<BlendOperation, 8>	blend_op;
+		std::array<AlphaBlendFactor, 8>	src_blend;
+		std::array<AlphaBlendFactor, 8>	dest_blend;
+		std::array<BlendOperation, 8>	blend_op_alpha;
+		std::array<AlphaBlendFactor, 8>	src_blend_alpha;
+		std::array<AlphaBlendFactor, 8>	dest_blend_alpha;
+		std::array<LogicOperation, 8>	logic_op;
+		std::array<uint8_t, 8>			color_write_mask;
 
 		BlendStateDesc();
 
 		friend bool operator<(BlendStateDesc const & lhs, BlendStateDesc const & rhs);
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(BlendStateDesc) == 270);
 
 	struct KLAYGE_CORE_API SamplerStateDesc
 	{
@@ -298,86 +308,42 @@ namespace KlayGE
 
 		friend bool operator<(SamplerStateDesc const & lhs, SamplerStateDesc const & rhs);
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(SamplerStateDesc) == 49);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 #pragma pack(pop)
 #endif
 
-	class KLAYGE_CORE_API RasterizerStateObject
+	class KLAYGE_CORE_API RenderStateObject : boost::noncopyable
 	{
 	public:
-		explicit RasterizerStateObject(RasterizerStateDesc const & desc)
-			: desc_(desc)
+		explicit RenderStateObject(
+			RasterizerStateDesc const& rs_desc, DepthStencilStateDesc const& dss_desc, BlendStateDesc const& bs_desc);
+		virtual ~RenderStateObject() noexcept;
+
+		RasterizerStateDesc const & GetRasterizerStateDesc() const noexcept
 		{
+			return rs_desc_;
 		}
 
-		virtual ~RasterizerStateObject()
+		DepthStencilStateDesc const & GetDepthStencilStateDesc() const noexcept
 		{
+			return dss_desc_;
 		}
 
-		RasterizerStateDesc const & GetDesc() const
+		BlendStateDesc const & GetBlendStateDesc() const noexcept
 		{
-			return desc_;
+			return bs_desc_;
 		}
-
-		static RasterizerStateObjectPtr NullObject();
 
 		virtual void Active() = 0;
 
 	protected:
-		RasterizerStateDesc desc_;
+		RasterizerStateDesc rs_desc_;
+		DepthStencilStateDesc dss_desc_;
+		BlendStateDesc bs_desc_;
 	};
 
-	class KLAYGE_CORE_API DepthStencilStateObject
-	{
-	public:
-		explicit DepthStencilStateObject(DepthStencilStateDesc const & desc)
-			: desc_(desc)
-		{
-		}
-
-		virtual ~DepthStencilStateObject()
-		{
-		}
-
-		DepthStencilStateDesc const & GetDesc() const
-		{
-			return desc_;
-		}
-
-		static DepthStencilStateObjectPtr NullObject();
-
-		virtual void Active(uint16_t front_stencil_ref, uint16_t back_stencil_ref) = 0;
-
-	protected:
-		DepthStencilStateDesc desc_;
-	};
-
-	class KLAYGE_CORE_API BlendStateObject
-	{
-	public:
-		explicit BlendStateObject(BlendStateDesc const & desc)
-			: desc_(desc)
-		{
-		}
-
-		virtual ~BlendStateObject()
-		{
-		}
-
-		BlendStateDesc const & GetDesc() const
-		{
-			return desc_;
-		}
-
-		static BlendStateObjectPtr NullObject();
-
-		virtual void Active(Color const & blend_factor, uint32_t sample_mask) = 0;
-
-	protected:
-		BlendStateDesc desc_;
-	};
-
-	class KLAYGE_CORE_API SamplerStateObject
+	class KLAYGE_CORE_API SamplerStateObject : boost::noncopyable
 	{
 	public:
 		explicit SamplerStateObject(SamplerStateDesc const & desc)
@@ -393,8 +359,6 @@ namespace KlayGE
 		{
 			return desc_;
 		}
-
-		static SamplerStateObjectPtr NullObject();
 
 	protected:
 		SamplerStateDesc desc_;

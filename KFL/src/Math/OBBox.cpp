@@ -36,92 +36,58 @@
 
 namespace KlayGE
 {
-	template OBBox_T<float>::OBBox_T();
-	template OBBox_T<float>::OBBox_T(float3 const & center,
-		float3 const & x_axis, float3 const & y_axis, float3 const & z_axis,
-		float3 const & extent);
-	template OBBox_T<float>::OBBox_T(float3 const & center,
-		Quaternion const & rotation,
-		float3 const & extent);
-	template OBBox_T<float>::OBBox_T(OBBox const & rhs);
-	template OBBox& OBBox_T<float>::operator+=(float3 const & rhs);
-	template OBBox& OBBox_T<float>::operator-=(float3 const & rhs);
-	template OBBox& OBBox_T<float>::operator*=(float rhs);
-	template OBBox& OBBox_T<float>::operator/=(float rhs);
-	template OBBox& OBBox_T<float>::operator=(OBBox const & rhs);
-	template OBBox const OBBox_T<float>::operator+() const;
-	template OBBox const OBBox_T<float>::operator-() const;
-	template bool OBBox_T<float>::IsEmpty() const;
-	template bool OBBox_T<float>::VecInBound(float3 const & v) const;
-	template float OBBox_T<float>::MaxRadiusSq() const;
-	template float3 OBBox_T<float>::Axis(uint32_t index) const;
-	template bool OBBox_T<float>::Intersect(AABBox const & aabb) const;
-	template bool OBBox_T<float>::Intersect(OBBox const & obb) const;
-	template bool OBBox_T<float>::Intersect(Sphere const & sphere) const;
-	template bool OBBox_T<float>::Intersect(Frustum const & frustum) const;
-	template float3 OBBox_T<float>::Corner(uint32_t index) const;
-	template bool OBBox_T<float>::operator==(OBBox const & rhs) const;
-
-
-	template <typename T>
-	OBBox_T<T>::OBBox_T()
-		: extent_(0, 0, 0)
-	{
-	}
-
 	template <typename T>
 	OBBox_T<T>::OBBox_T(Vector_T<T, 3> const & center,
 		Vector_T<T, 3> const & x_axis, Vector_T<T, 3> const & y_axis, Vector_T<T, 3> const & z_axis,
-		Vector_T<T, 3> const & extent)
+		Vector_T<T, 3> const & extent) noexcept
 		: center_(center), extent_(extent)
 	{
 		rotation_ = MathLib::to_quaternion(x_axis, y_axis, z_axis, 0);
 	}
 
 	template <typename T>
-	OBBox_T<T>::OBBox_T(Vector_T<T, 3> const & center,
-		Quaternion_T<T> const & rotation,
-		Vector_T<T, 3> const & extent)
-		: center_(center), rotation_(rotation), extent_(extent)
-	{
-	}
-
-	template <typename T>
-	OBBox_T<T>::OBBox_T(OBBox_T<T> const & rhs)
+	OBBox_T<T>::OBBox_T(OBBox_T<T> const & rhs) noexcept
 		: Bound_T<T>(rhs),
 			center_(rhs.center_), rotation_(rhs.rotation_), extent_(rhs.extent_)
 	{
 	}
 
 	template <typename T>
-	OBBox_T<T>& OBBox_T<T>::operator+=(Vector_T<T, 3> const & rhs)
+	OBBox_T<T>::OBBox_T(OBBox_T<T>&& rhs) noexcept
+		: Bound_T<T>(rhs),
+			center_(std::move(rhs.center_)), rotation_(std::move(rhs.rotation_)), extent_(std::move(rhs.extent_))
+	{
+	}
+
+	template <typename T>
+	OBBox_T<T>& OBBox_T<T>::operator+=(Vector_T<T, 3> const & rhs) noexcept
 	{
 		center_ += rhs;
 		return *this;
 	}
 
 	template <typename T>
-	OBBox_T<T>& OBBox_T<T>::operator-=(Vector_T<T, 3> const & rhs)
+	OBBox_T<T>& OBBox_T<T>::operator-=(Vector_T<T, 3> const & rhs) noexcept
 	{
 		center_ -= rhs;
 		return *this;
 	}
 
 	template <typename T>
-	OBBox_T<T>& OBBox_T<T>::operator*=(T rhs)
+	OBBox_T<T>& OBBox_T<T>::operator*=(T rhs) noexcept
 	{
 		extent_ *= rhs;
 		return *this;
 	}
 
 	template <typename T>
-	OBBox_T<T>& OBBox_T<T>::operator/=(T rhs)
+	OBBox_T<T>& OBBox_T<T>::operator/=(T rhs) noexcept
 	{
 		return this->operator*=(1.0f / rhs);
 	}
 
 	template <typename T>
-	OBBox_T<T>& OBBox_T<T>::operator=(OBBox_T<T> const & rhs)
+	OBBox_T<T>& OBBox_T<T>::operator=(OBBox_T<T> const & rhs) noexcept
 	{
 		if (this != &rhs)
 		{
@@ -133,13 +99,22 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	OBBox_T<T> const OBBox_T<T>::operator+() const
+	OBBox_T<T>& OBBox_T<T>::operator=(OBBox_T<T>&& rhs) noexcept
+	{
+		center_ = std::move(rhs.center_);
+		rotation_ = std::move(rhs.rotation_);
+		extent_ = std::move(rhs.extent_);
+		return *this;
+	}
+
+	template <typename T>
+	OBBox_T<T> const OBBox_T<T>::operator+() const noexcept
 	{
 		return *this;
 	}
 
 	template <typename T>
-	OBBox_T<T> const OBBox_T<T>::operator-() const
+	OBBox_T<T> const OBBox_T<T>::operator-() const noexcept
 	{
 		OBBox_T<T> ret;
 		ret.center_ = -center_;
@@ -149,25 +124,25 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::IsEmpty() const
+	bool OBBox_T<T>::IsEmpty() const noexcept
 	{
 		return MathLib::length_sq(extent_) < T(1e-6);
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::VecInBound(Vector_T<T, 3> const & v) const
+	bool OBBox_T<T>::VecInBound(Vector_T<T, 3> const & v) const noexcept
 	{
 		return MathLib::intersect_point_obb(v, *this);
 	}
 
 	template <typename T>
-	T OBBox_T<T>::MaxRadiusSq() const
+	T OBBox_T<T>::MaxRadiusSq() const noexcept
 	{
 		return MathLib::length_sq(extent_);
 	}
 
 	template <typename T>
-	Vector_T<T, 3> OBBox_T<T>::Axis(uint32_t index) const
+	Vector_T<T, 3> OBBox_T<T>::Axis(uint32_t index) const noexcept
 	{
 		Vector_T<T, 3> v(0, 0, 0);
 		v[index] = 1;
@@ -175,31 +150,31 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::Intersect(AABBox_T<T> const & aabb) const
+	bool OBBox_T<T>::Intersect(AABBox_T<T> const & aabb) const noexcept
 	{
 		return MathLib::intersect_aabb_obb(aabb, *this);
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::Intersect(OBBox_T<T> const & obb) const
+	bool OBBox_T<T>::Intersect(OBBox_T<T> const & obb) const noexcept
 	{
 		return MathLib::intersect_obb_obb(*this, obb);
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::Intersect(Sphere_T<T> const & sphere) const
+	bool OBBox_T<T>::Intersect(Sphere_T<T> const & sphere) const noexcept
 	{
 		return MathLib::intersect_obb_sphere(*this, sphere);
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::Intersect(Frustum_T<T> const & frustum) const
+	bool OBBox_T<T>::Intersect(Frustum_T<T> const & frustum) const noexcept
 	{
-		return MathLib::intersect_obb_frustum(*this, frustum) != BO_No;
+		return MathLib::intersect_obb_frustum(*this, frustum) != BoundOverlap::No;
 	}
 
 	template <typename T>
-	Vector_T<T, 3> OBBox_T<T>::Corner(uint32_t index) const
+	Vector_T<T, 3> OBBox_T<T>::Corner(uint32_t index) const noexcept
 	{
 		BOOST_ASSERT(index < 8);
 
@@ -215,10 +190,13 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	bool OBBox_T<T>::operator==(OBBox_T<T> const & rhs) const
+	bool OBBox_T<T>::operator==(OBBox_T<T> const & rhs) const noexcept
 	{
 		return (center_ == rhs.center_)
 			&& (rotation_ == rhs.rotation_)
 			&& (extent_ == rhs.extent_);
 	}
+
+
+	template class OBBox_T<float>;
 }

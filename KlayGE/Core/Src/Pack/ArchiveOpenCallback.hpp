@@ -28,11 +28,12 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _KFL_ARCHIVEOPENCALLBACK_HPP
-#define _KFL_ARCHIVEOPENCALLBACK_HPP
+#ifndef KLAYGE_CORE_ARCHIVE_OPEN_CALLBACK_HPP
+#define KLAYGE_CORE_ARCHIVE_OPEN_CALLBACK_HPP
 
 #pragma once
 
+#include <atomic>
 #include <string>
 
 #include <CPP/7zip/Archive/IArchive.h>
@@ -40,71 +41,31 @@
 
 namespace KlayGE
 {
-	class CArchiveOpenCallback : public IArchiveOpenCallback, public ICryptoGetTextPassword
+	class ArchiveOpenCallback final : boost::noncopyable, public IArchiveOpenCallback, public ICryptoGetTextPassword
 	{
 	public:
-		STDMETHOD_(ULONG, AddRef)()
-		{
-			++ ref_count_;
-			return ref_count_;
-		}
-		STDMETHOD_(ULONG, Release)()
-		{
-			-- ref_count_;
-			if (0 == ref_count_)
-			{
-				delete this;
-				return 0;
-			}
-			return ref_count_;
-		}
+		// IUnknown
+		STDMETHOD_(ULONG, AddRef)() noexcept;
+		STDMETHOD_(ULONG, Release)() noexcept;
+		STDMETHOD(QueryInterface)(REFGUID iid, void** out_object) noexcept;
 
-		STDMETHOD(QueryInterface)(REFGUID iid, void** outObject)
-		{
-			if (IID_ICryptoGetTextPassword == iid)
-			{
-				*outObject = static_cast<ICryptoGetTextPassword*>(this);
-				this->AddRef();
-				return S_OK;
-			}
-			else
-			{
-				if (IID_IArchiveOpenCallback == iid)
-				{
-					*outObject = static_cast<IArchiveOpenCallback*>(this);
-					this->AddRef();
-					return S_OK;
-				}
-				else
-				{
-					return E_NOINTERFACE;
-				}
-			}
-		}
-
-		STDMETHOD(SetTotal)(const UInt64* files, const UInt64* bytes);
-		STDMETHOD(SetCompleted)(const UInt64* files, const UInt64* bytes);
+		// IArchiveOpenCallback
+		STDMETHOD(SetTotal)(UInt64 const * files, UInt64 const * bytes) noexcept;
+		STDMETHOD(SetCompleted)(UInt64 const * files, UInt64 const * bytes) noexcept;
 
 		// ICryptoGetTextPassword
-		STDMETHOD(CryptoGetTextPassword)(BSTR *password);
+		STDMETHOD(CryptoGetTextPassword)(BSTR *password) noexcept;
 
-		CArchiveOpenCallback()
-			: ref_count_(1), password_is_defined_(false)
-		{
-		}
-		
-		virtual ~CArchiveOpenCallback()
-		{
-		}
-
-		void Init(std::string const & pw);
+	public:
+		explicit ArchiveOpenCallback(std::string_view pw) noexcept;
+		virtual ~ArchiveOpenCallback() noexcept;
 
 	private:
-		atomic<int32_t> ref_count_;
+		std::atomic<int32_t> ref_count_{1};
 
-		bool password_is_defined_;
+		bool password_is_defined_ = false;
 		std::wstring password_;
 	};
 }
 
-#endif		// _KFL_ARCHIVEOPENCALLBACK_HPP
+#endif		// KLAYGE_CORE_ARCHIVE_OPEN_CALLBACK_HPP

@@ -13,14 +13,14 @@ def support_one(feature_names):
 			return True
 	return False
 
-ogl_ver_db = ['2.0', '3.0']
-glsl_ver_db = ['1.0', '1.1', '3.0']
+ogl_ver_db = ['2.0', '3.0', '3.1', '3.2']
+glsl_ver_db = ['1.0', '1.1', '3.0', '3.1', '3.2']
 
 features_db = {
 	'2.0' : {
 			'' : ''
 		},
-		
+
 	'3.0' : {
 			'OpenGL Shading Language ES 3.00' : lambda : is_supported('GLSL_3_0'),
 			'Transform feedback' : lambda : support_one(['GL_EXT_transform_feedback', 'GL_NV_transform_feedback']),
@@ -30,7 +30,7 @@ features_db = {
 			'Fence sync objects' : lambda : is_supported('GLES_APPLE_sync'),
 			'Pixel buffer object' : lambda : is_supported('GLES_NV_pixel_buffer_object'),
 			'Map buffer range' : lambda : is_supported('GLES_EXT_map_buffer_range'),
-			'Data copying between buffer objects' : lambda : support_one(['GL_ARB_copy_buffer', 'GL_EXT_copy_buffer']),
+			'Data copying between buffer objects' : lambda : is_supported('GLES_NV_copy_buffer'),
 			'Simple boolean occlusion queries' : lambda : is_supported('GLES_EXT_occlusion_query_boolean'),
 			'Instanced rendering' : lambda : support_one(['GLES_EXT_draw_instanced', 'GLES_NV_draw_instanced']),
 			'Instanced array' : lambda : support_one(['GLES_EXT_instanced_arrays', 'GLES_NV_instanced_arrays', 'GLES_ANGLE_instanced_arrays']),
@@ -44,7 +44,7 @@ features_db = {
 			'Non-Power-Of-Two Textures' : lambda : is_supported('GLES_OES_texture_npot'),
 			'Texture LOD Bias' : lambda : is_supported('GLES_EXT_texture_lod_bias'),
 			'Integer texture' : lambda : is_supported('GL_EXT_texture_integer'),
-			'sRGB-encoded framebuffer' : lambda : is_supported('GL_EXT_sRGB'),
+			'sRGB-encoded framebuffer' : lambda : is_supported('GLES_EXT_sRGB'),
 			'Packed float' : lambda : is_supported('GLES_NV_packed_float'),
 			'Shared exponent' : lambda : is_supported('GL_EXT_texture_shared_exponent'),
 			'Unsigned 10.10.10.2 integer textures format' : lambda : is_supported('GL_ARB_texture_rgb10_a2ui'),
@@ -61,6 +61,40 @@ features_db = {
 			'Vertex Array Draw Element Range' : lambda : is_supported('GL_EXT_draw_range_elements'),
 			'New Blending Equations' : lambda : is_supported('GLES_EXT_blend_minmax'),
 			'Binary represtation of a program object' : lambda : support_one(['GLES_OES_get_program_binary', 'GLES_AMD_program_binary_Z400', 'GLES_IMG_program_binary', 'GLES_IMG_shader_binary', 'GLES_ARM_mali_shader_binary', 'GLES_VIV_shader_binary', 'GLES_DMP_shader_binary', 'GLES_FJ_shader_binary_GCCSO', 'GLES_ARM_mali_program_binary', 'GLES_NV_platform_binary', 'GLES_ANGLE_program_binary'])
+		},
+
+	'3.1' : {
+			'OpenGL Shading Language ES 3.10' : lambda : is_supported('GLSL_3_1'),
+			'Compute shader' : lambda : is_supported('GL_ARB_compute_shader'),
+			'Draw many GPU generated objects with one call' : lambda : support_one(['GL_ARB_multi_draw_indirect', 'GL_AMD_multi_draw_indirect']),
+			'Framebuffer without attachment' : lambda : is_supported('GL_ARB_framebuffer_no_attachments'),
+			'Shader reflection' : lambda : is_supported('GL_ARB_program_interface_query'),
+			'Separately shader objects for different shader stages' : lambda : is_supported('GLES_EXT_separate_shader_objects'),
+			'Loads from and stores to textures from shader' : lambda : support_one(['GL_ARB_shader_image_load_store', 'GL_EXT_shader_image_load_store']),
+			'Immutable storage objects for multisampled textures' : lambda : is_supported('GL_ARB_texture_storage_multisample'),
+			'Multisampled textures and texture samplers for specific sample locations' : lambda : is_supported('GL_ARB_texture_multisample'),
+			'Separate vertex attribute state from the data stores of each array' : lambda : is_supported('GL_ARB_vertex_attrib_binding'),
+			'Pre-assign attribute locations' : lambda : is_supported('GLES_NV_explicit_attrib_location'),
+		},
+
+	'3.2' : {
+			'OpenGL Shading Language ES 3.20' : lambda : is_supported('GLSL_3_2'),
+			'Blend equation advanced' : lambda : support_one(['GLES_KHR_blend_equation_advanced', 'GLES_NV_blend_equation_advanced']),
+			'Direct copy of pixels between textures and render buffers' : lambda : support_one(['GLES_OES_copy_image', 'GLES_EXT_copy_image']),
+			'Enhanced debug context' : lambda : is_supported('GLES_KHR_debug'),
+			'Draw buffers indexed' : lambda : support_one(['GLES_OES_draw_buffers_indexed', 'GLES_EXT_draw_buffers_indexed']),
+			'Modification of the base vertex index' : lambda : support_one(['GLES_EXT_draw_elements_base_vertex', 'GLES_OES_draw_elements_base_vertex']),
+			'Geometry shaders' : lambda : support_one(['GLES_OES_geometry_shader', 'GLES_EXT_geometry_shader']),
+			'Primitive bounding box' : lambda : support_one(['GLES_OES_primitive_bounding_box', 'GLES_EXT_primitive_bounding_box']),
+			'Robustness' : lambda : support_one(['GLES_KHR_robustness', 'GLES_EXT_robustness']),
+			'Explicitly shading at samples' : lambda : is_supported('GLES_OES_sample_shading'),
+			'Tessellation stages' : lambda : support_one(['GLES_OES_tessellation_shader', 'GLES_EXT_tessellation_shader']),
+			'Texture border clamp' : lambda : support_one(['GLES_OES_texture_border_clamp', 'GLES_EXT_texture_border_clamp']),
+			'Texture buffer' : lambda : support_one(['GLES_OES_texture_buffer', 'GLES_EXT_texture_buffer']),
+			'Immutable storage objects for multisampled 2d texture array' : lambda : is_supported('GLES_OES_texture_storage_multisample_2d_array'),
+			'Shader multisample interpolation' : lambda : is_supported('GLES_OES_shader_multisample_interpolation'),
+			'ASTC texture compression' : lambda : is_supported('GLES_OES_texture_compression_astc'),
+			'Cube map array' : lambda : is_supported('GLES_EXT_texture_cube_map_array'),
 		},
 }
 
@@ -82,7 +116,7 @@ class information:
 		stream.write('\t<title>OpenGL Compatibility</title>\n')
 		stream.write('</head>\n')
 		stream.write('<body>\n')
-		stream.write('<h1>OpenGL Compatibility</h1>\n')
+		stream.write('<h1>OpenGL ES Compatibility</h1>\n')
 		stream.write('\t<table width="100%">\n')
 		stream.write('\t\t<tr>\n')
 		stream.write('\t\t\t<th style="background: gray; color: white">Vendor:</th>\n')
@@ -109,7 +143,7 @@ class information:
 
 			potential_rate = len(supported) * 100.0 / (len(supported) + len(unsupported))
 
-			stream.write('\t<h3>OpenGL %s potential support rate: %.1f%%</h3>\n' % (feature_info[0], potential_rate))
+			stream.write('\t<h3>OpenGL ES %s potential support rate: %.1f%%</h3>\n' % (feature_info[0], potential_rate))
 			stream.write('\t<table width="100%" style="border-bottom: 1px solid black">\n')
 
 			if len(supported) > 0:
@@ -170,6 +204,10 @@ class information:
 			is_supported.exts.append('GLSL_1_1')
 		if glsl_ver_index >= 2:
 			is_supported.exts.append('GLSL_3_0')
+		if glsl_ver_index >= 3:
+			is_supported.exts.append('GLSL_3_1')
+		if glsl_ver_index >= 4:
+			is_supported.exts.append('GLSL_3_2')
 
 		for i in range(0, len(ogl_ver_db)):
 			supported = []
@@ -194,7 +232,7 @@ def gles_compatibility(vendor, renderer, major_ver, minor_ver, glsl_major_ver, g
 	info = information()
 	info.make_reports(vendor, renderer, major_ver, minor_ver, glsl_major_ver, glsl_minor_ver, exts)
 
-	report_file_name = 'report.html'
+	report_file_name = 'GLESCompatibilityReport.html'
 	report_file = open(report_file_name, 'w')
 	info.to_html(report_file)
 	report_file.close()

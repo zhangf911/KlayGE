@@ -37,54 +37,101 @@
 
 namespace KlayGE
 {
-	STDMETHODIMP CArchiveExtractCallback::SetTotal(UInt64 /*size*/)
+	ArchiveExtractCallback::ArchiveExtractCallback(std::string_view pw, ISequentialOutStream* out_file_stream) noexcept
+		: password_is_defined_(!pw.empty()), out_file_stream_(out_file_stream)
 	{
+		Convert(password_, pw);
+	}
+	
+	ArchiveExtractCallback::~ArchiveExtractCallback() noexcept = default;
+
+	STDMETHODIMP_(ULONG) ArchiveExtractCallback::AddRef() noexcept
+	{
+		++ ref_count_;
+		return ref_count_;
+	}
+
+	STDMETHODIMP_(ULONG) ArchiveExtractCallback::Release() noexcept
+	{
+		-- ref_count_;
+		if (0 == ref_count_)
+		{
+			delete this;
+			return 0;
+		}
+		return ref_count_;
+	}
+
+	STDMETHODIMP ArchiveExtractCallback::QueryInterface(REFGUID iid, void** out_object) noexcept
+	{
+		if (IID_ICryptoGetTextPassword == iid)
+		{
+			*out_object = static_cast<ICryptoGetTextPassword*>(this);
+			this->AddRef();
+			return S_OK;
+		}
+		else if (IID_IArchiveExtractCallback == iid)
+		{
+			*out_object = static_cast<IArchiveExtractCallback*>(this);
+			this->AddRef();
+			return S_OK;
+		}
+		else
+		{
+			return E_NOINTERFACE;
+		}
+	}
+
+	STDMETHODIMP ArchiveExtractCallback::SetTotal(UInt64 size) noexcept
+	{
+		KFL_UNUSED(size);
 		return S_OK;
 	}
 
-	STDMETHODIMP CArchiveExtractCallback::SetCompleted(const UInt64* /*completeValue*/)
+	STDMETHODIMP ArchiveExtractCallback::SetCompleted(UInt64 const * complete_value) noexcept
 	{
+		KFL_UNUSED(complete_value);
 		return S_OK;
 	}
 
-	STDMETHODIMP CArchiveExtractCallback::GetStream(UInt32 /*index*/, ISequentialOutStream** outStream, Int32 askExtractMode)
+	STDMETHODIMP ArchiveExtractCallback::GetStream(UInt32 index, ISequentialOutStream** out_stream, Int32 ask_extract_mode) noexcept
 	{
-		enum 
+		KFL_UNUSED(index);
+
+		enum
 		{
 			kExtract = 0,
 			kTest,
 			kSkip,
 		};
 
-		if (kExtract == askExtractMode)
+		if (kExtract == ask_extract_mode)
 		{
-			_outFileStream->AddRef();
-			*outStream = _outFileStream.get();
+			out_file_stream_->AddRef();
+			*out_stream = out_file_stream_.get();
 		}
 		else
 		{
-			*outStream = nullptr;
+			*out_stream = nullptr;
 		}
 		return S_OK;
 	}
 
-	STDMETHODIMP CArchiveExtractCallback::PrepareOperation(Int32 /*askExtractMode*/)
+	STDMETHODIMP ArchiveExtractCallback::PrepareOperation(Int32 ask_extract_mode) noexcept
 	{
+		KFL_UNUSED(ask_extract_mode);
 		return S_OK;
 	}
 
-	STDMETHODIMP CArchiveExtractCallback::SetOperationResult(Int32 /*operationResult*/)
+	STDMETHODIMP ArchiveExtractCallback::SetOperationResult(Int32 operation_result) noexcept
 	{
+		KFL_UNUSED(operation_result);
 		return S_OK;
 	}
 
-	STDMETHODIMP CArchiveExtractCallback::CryptoGetTextPassword(BSTR* password)
+	STDMETHODIMP ArchiveExtractCallback::CryptoGetTextPassword(BSTR* password) noexcept
 	{
-		if (!password_is_defined_)
-		{
-			return E_ABORT;
-		}
-		else
+		if (password_is_defined_)
 		{
 #ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
 			*password = SysAllocString(password_.c_str());
@@ -93,13 +140,9 @@ namespace KlayGE
 #endif
 			return S_OK;
 		}
-	}
-
-	void CArchiveExtractCallback::Init(std::string const & pw, shared_ptr<ISequentialOutStream> const & outFileStream)
-	{
-		_outFileStream = outFileStream;
-
-		password_is_defined_ = !pw.empty();
-		Convert(password_, pw);
+		else
+		{
+			return E_ABORT;
+		}
 	}
 }

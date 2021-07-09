@@ -14,7 +14,6 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/RenderFactory.hpp>
@@ -28,52 +27,22 @@ namespace KlayGE
 {
 	OGLESConditionalRender::OGLESConditionalRender()
 	{
-		BOOST_ASSERT(glloader_GLES_VERSION_3_0() || glloader_GLES_EXT_occlusion_query_boolean());
-
-		if (glloader_GLES_VERSION_3_0())
-		{
-			glGenQueries(1, &query_);
-		}
-		else
-		{
-			glGenQueriesEXT(1, &query_);
-		}
+		glGenQueries(1, &query_);
 	}
 
 	OGLESConditionalRender::~OGLESConditionalRender()
 	{
-		if (glloader_GLES_VERSION_3_0())
-		{
-			glDeleteQueries(1, &query_);
-		}
-		else
-		{
-			glDeleteQueriesEXT(1, &query_);
-		}
+		glDeleteQueries(1, &query_);
 	}
 
 	void OGLESConditionalRender::Begin()
 	{
-		if (glloader_GLES_VERSION_3_0())
-		{
-			glBeginQuery(GL_ANY_SAMPLES_PASSED, query_);
-		}
-		else
-		{
-			glBeginQueryEXT(GL_ANY_SAMPLES_PASSED_EXT, query_);
-		}
+		glBeginQuery(GL_ANY_SAMPLES_PASSED, query_);
 	}
 
 	void OGLESConditionalRender::End()
 	{
-		if (glloader_GLES_VERSION_3_0())
-		{
-			glEndQuery(GL_ANY_SAMPLES_PASSED);
-		}
-		else
-		{
-			glEndQueryEXT(GL_ANY_SAMPLES_PASSED_EXT);
-		}
+		glEndQuery(GL_ANY_SAMPLES_PASSED);
 	}
 
 	void OGLESConditionalRender::BeginConditionalRender()
@@ -87,26 +56,13 @@ namespace KlayGE
 	bool OGLESConditionalRender::AnySamplesPassed()
 	{
 		GLuint ret = 0;
-		if (glloader_GLES_VERSION_3_0())
+		GLuint available = 0;
+		while (!available)
 		{
-			GLuint available = 0;
-			while (!available)
-			{
-				glGetQueryObjectuiv(query_, GL_QUERY_RESULT_AVAILABLE, &available);
-			}
-
-			glGetQueryObjectuiv(query_, GL_QUERY_RESULT, &ret);
+			glGetQueryObjectuiv(query_, GL_QUERY_RESULT_AVAILABLE, &available);
 		}
-		else
-		{
-			GLuint available = 0;
-			while (!available)
-			{
-				glGetQueryObjectuivEXT(query_, GL_QUERY_RESULT_AVAILABLE_EXT, &available);
-			}
 
-			glGetQueryObjectuivEXT(query_, GL_QUERY_RESULT_EXT, &ret);
-		}
+		glGetQueryObjectuiv(query_, GL_QUERY_RESULT, &ret);
 		return (ret != 0);
 	}
 
@@ -115,22 +71,22 @@ namespace KlayGE
 	{
 		BOOST_ASSERT(glloader_GLES_EXT_disjoint_timer_query());
 
-		glGenQueriesEXT(1, &query_);
+		glGenQueries(1, &query_);
 	}
 
 	OGLESTimerQuery::~OGLESTimerQuery()
 	{
-		glDeleteQueriesEXT(1, &query_);
+		glDeleteQueries(1, &query_);
 	}
 
 	void OGLESTimerQuery::Begin()
 	{
-		glBeginQueryEXT(GL_TIME_ELAPSED_EXT, query_);
+		glBeginQuery(GL_TIME_ELAPSED_EXT, query_);
 	}
 
 	void OGLESTimerQuery::End()
 	{
-		glEndQueryEXT(GL_TIME_ELAPSED_EXT);
+		glEndQuery(GL_TIME_ELAPSED_EXT);
 	}
 
 	double OGLESTimerQuery::TimeElapsed()
@@ -138,19 +94,94 @@ namespace KlayGE
 		GLuint available = 0;
 		while (!available)
 		{
-			glGetQueryObjectuivEXT(query_, GL_QUERY_RESULT_AVAILABLE_EXT, &available);
+			glGetQueryObjectuiv(query_, GL_QUERY_RESULT_AVAILABLE, &available);
 		}
 
-		OGLESRenderEngine const & re = *checked_cast<OGLESRenderEngine const *>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		if (!re.GPUDisjointOccurred())
-		{
-			GLuint64 ret;
-			glGetQueryObjectui64vEXT(query_, GL_QUERY_RESULT_EXT, &ret);
-			return static_cast<uint64_t>(ret)* 1e-9;
-		}
-		else
+		GLint disjoint_occurred = 0;
+		glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint_occurred);
+		if (disjoint_occurred)
 		{
 			return -1;
 		}
+		else
+		{
+			GLuint64 ret;
+			glGetQueryObjectui64vEXT(query_, GL_QUERY_RESULT_EXT, &ret);
+			return static_cast<uint64_t>(ret) * 1e-9;
+		}
+	}
+
+
+	OGLESSOStatisticsQuery::OGLESSOStatisticsQuery()
+	{
+		glGenQueries(1, &primitive_written_query_);
+		if (glloader_GLES_VERSION_3_2() || glloader_GLES_EXT_geometry_shader())
+		{
+			glGenQueries(1, &primitive_generated_query_);
+		}
+		else
+		{
+			primitive_generated_query_ = 0;
+		}
+	}
+
+	OGLESSOStatisticsQuery::~OGLESSOStatisticsQuery()
+	{
+		glDeleteQueries(1, &primitive_written_query_);
+		if (glloader_GLES_VERSION_3_2() || glloader_GLES_EXT_geometry_shader())
+		{
+			glDeleteQueries(1, &primitive_generated_query_);
+		}
+	}
+
+	void OGLESSOStatisticsQuery::Begin()
+	{
+		glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, primitive_written_query_);
+		if (primitive_generated_query_ != 0)
+		{
+			glBeginQuery(GL_PRIMITIVES_GENERATED, primitive_generated_query_);
+		}
+	}
+
+	void OGLESSOStatisticsQuery::End()
+	{
+		glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+		if (primitive_generated_query_ != 0)
+		{
+			glEndQuery(GL_PRIMITIVES_GENERATED);
+		}
+	}
+
+	uint64_t OGLESSOStatisticsQuery::NumPrimitivesWritten()
+	{
+		GLuint available = 0;
+		while (!available)
+		{
+			glGetQueryObjectuiv(primitive_written_query_, GL_QUERY_RESULT_AVAILABLE, &available);
+		}
+
+		GLuint ret;
+		glGetQueryObjectuiv(primitive_written_query_, GL_QUERY_RESULT, &ret);
+		return ret;
+	}
+
+	uint64_t OGLESSOStatisticsQuery::PrimitivesGenerated()
+	{
+		GLuint ret;
+		if (primitive_generated_query_ != 0)
+		{
+			GLuint available = 0;
+			while (!available)
+			{
+				glGetQueryObjectuiv(primitive_generated_query_, GL_QUERY_RESULT_AVAILABLE, &available);
+			}
+
+			glGetQueryObjectuiv(primitive_generated_query_, GL_QUERY_RESULT, &ret);
+		}
+		else
+		{
+			ret = 0;
+		}
+		return ret;
 	}
 }

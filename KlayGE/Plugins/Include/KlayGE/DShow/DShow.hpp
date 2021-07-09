@@ -15,50 +15,49 @@
 
 #pragma once
 
-#include <windows.h>
-#include <control.h>
-#include <d3d9.h>
-#include <strmif.h>
-#include <vmr9.h>
-
 #include <string>
 
-#include <boost/noncopyable.hpp>
-
+#include <KFL/com_ptr.hpp>
 #include <KlayGE/Show.hpp>
+
+struct IGraphBuilder;
+struct IBaseFilter;
+struct IMediaControl;
+struct IMediaEvent;
+struct IVMRSurfaceAllocator9;
 
 namespace KlayGE
 {
-	class DShowEngine : boost::noncopyable, public ShowEngine
+	class DShowEngine final : public ShowEngine
 	{
 	public:
 		DShowEngine();
-		~DShowEngine();
+		~DShowEngine() override;
 
-		bool IsComplete();
+		bool IsComplete() override;
 
-		void Load(std::string const & fileName);
-		TexturePtr PresentTexture();
+		void Load(std::string const & fileName) override;
+		TexturePtr PresentTexture() override;
 
-		ShowState State(long msTimeout = -1);
+		ShowState State(long msTimeout = -1) override;
 
 	private:
-		shared_ptr<IGraphBuilder>	graph_;
-		shared_ptr<IBaseFilter>      filter_;
-		shared_ptr<IMediaControl>	media_control_;
-		shared_ptr<IMediaEvent>		media_event_;
-		shared_ptr<IVMRSurfaceAllocator9> vmr_allocator_;
+		com_ptr<IGraphBuilder> graph_;
+		com_ptr<IBaseFilter> filter_;
+		com_ptr<IMediaControl> media_control_;
+		com_ptr<IMediaEvent> media_event_;
+		com_ptr<IVMRSurfaceAllocator9> vmr_allocator_;
 
 	private:
 		void Init();
 		void Free();
 
-		virtual void DoSuspend() KLAYGE_OVERRIDE;
-		virtual void DoResume() KLAYGE_OVERRIDE;
+		void DoSuspend() override;
+		void DoResume() override;
 
-		void DoPlay();
-		void DoStop();
-		void DoPause();
+		void DoPlay() override;
+		void DoStop() override;
+		void DoPause() override;
 	};
 }
 

@@ -13,7 +13,6 @@
 #include <KlayGE/KlayGE.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
-#include <KlayGE/Window.hpp>
 #include <KlayGE/Input.hpp>
 #include <KlayGE/Font.hpp>
 
@@ -22,12 +21,8 @@
 namespace KlayGE
 {
 	UIRadioButton::UIRadioButton(UIDialogPtr const & dialog)
-						: UIControl(UIRadioButton::Type, dialog),
-							checked_(false), pressed_(false)
+						: UIRadioButton(UIRadioButton::Type, dialog)
 	{
-		hotkey_ = 0;
-
-		this->InitDefaultElements();
 	}
 
 	UIRadioButton::UIRadioButton(uint32_t type, UIDialogPtr const & dialog)
@@ -36,26 +31,6 @@ namespace KlayGE
 	{
 		hotkey_ = 0;
 
-		this->InitDefaultElements();
-	}
-
-	UIRadioButton::UIRadioButton(UIDialogPtr const & dialog, int ID, uint32_t nButtonGroup, std::wstring const & strText, int4 const & coord_size, bool bChecked, uint8_t hotkey, bool bIsDefault)
-						: UIControl(UIRadioButton::Type, dialog),
-							button_group_(nButtonGroup),
-							checked_(bChecked), pressed_(false), text_(strText)
-	{
-		this->InitDefaultElements();
-
-		// Set the ID and list index
-		this->SetID(ID);
-		this->SetLocation(coord_size.x(), coord_size.y());
-		this->SetSize(coord_size.z(), coord_size.w());
-		this->SetHotkey(hotkey);
-		this->SetIsDefault(bIsDefault);
-	}
-
-	void UIRadioButton::InitDefaultElements()
-	{
 		UIElement Element;
 
 		// Box
@@ -67,15 +42,30 @@ namespace KlayGE
 			Element.TextureColor().States[UICS_Focus] = Color(1, 1, 1, 200.0f / 255);
 			Element.TextureColor().States[UICS_Pressed] = Color(1, 1, 1, 1);
 
-			elements_.push_back(MakeSharedPtr<UIElement>(Element));
+			elements_.push_back(MakeUniquePtr<UIElement>(Element));
 		}
 
 		// Check
 		{
 			Element.SetTexture(0, UIManager::Instance().ElementTextureRect(UICT_RadioButton, 1));
 
-			elements_.push_back(MakeSharedPtr<UIElement>(Element));
+			elements_.push_back(MakeUniquePtr<UIElement>(Element));
 		}
+	}
+
+	UIRadioButton::UIRadioButton(UIDialogPtr const & dialog, int ID, uint32_t nButtonGroup, std::wstring const & strText, int4 const & coord_size, bool bChecked, uint8_t hotkey, bool bIsDefault)
+						: UIRadioButton(dialog)
+	{
+		button_group_ = nButtonGroup;
+		checked_ = bChecked;
+		this->SetText(strText);
+
+		// Set the ID and list index
+		this->SetID(ID);
+		this->SetLocation(coord_size.x(), coord_size.y());
+		this->SetSize(coord_size.z(), coord_size.w());
+		this->SetHotkey(hotkey);
+		this->SetIsDefault(bIsDefault);
 	}
 
 	void UIRadioButton::KeyDownHandler(UIDialog const & /*sender*/, uint32_t key)
@@ -157,46 +147,40 @@ namespace KlayGE
 	{
 		UI_Control_State iState = UICS_Normal;
 
-		if (!visible_)
+		if (visible_)
 		{
-			iState = UICS_Hidden;
-		}
-		else
-		{
-			if (!enabled_)
-			{
-				iState = UICS_Disabled;
-			}
-			else
+			if (enabled_)
 			{
 				if (pressed_)
 				{
 					iState = UICS_Pressed;
 				}
-				else
+				else if (is_mouse_over_)
 				{
-					if (is_mouse_over_)
-					{
-						iState = UICS_MouseOver;
-					}
-					else
-					{
-						if (has_focus_)
-						{
-							iState = UICS_Focus;
-						}
-					}
+					iState = UICS_MouseOver;
+				}
+				else if (has_focus_)
+				{
+					iState = UICS_Focus;
 				}
 			}
+			else
+			{
+				iState = UICS_Disabled;
+			}
+		}
+		else
+		{
+			iState = UICS_Hidden;
 		}
 
-		UIElementPtr pElement = elements_[0];
+		auto& box_element = *elements_[0];
 
-		pElement->TextureColor().SetState(iState);
-		pElement->FontColor().SetState(iState);
+		box_element.TextureColor().SetState(iState);
+		box_element.FontColor().SetState(iState);
 
-		this->GetDialog()->DrawSprite(*pElement, button_rc_);
-		this->GetDialog()->DrawString(text_, *pElement, text_rc_, true);
+		this->GetDialog()->DrawSprite(box_element, button_rc_);
+		this->GetDialog()->DrawString(text_, box_element, text_rc_, true);
 
 		if (!checked_)
 		{
@@ -204,11 +188,11 @@ namespace KlayGE
 		}
 
 		// Main button
-		pElement = elements_[1];
+		auto& check_element = *elements_[1];
 
 		// Blend current color
-		pElement->TextureColor().SetState(iState);
-		this->GetDialog()->DrawSprite(*pElement, button_rc_);
+		check_element.TextureColor().SetState(iState);
+		this->GetDialog()->DrawSprite(check_element, button_rc_);
 	}
 
 	std::wstring const & UIRadioButton::GetText() const

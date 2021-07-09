@@ -28,95 +28,52 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _KLAYGE_RESLOADER_HPP
-#define _KLAYGE_RESLOADER_HPP
+#ifndef KLAYGE_CORE_RESLOADER_HPP
+#define KLAYGE_CORE_RESLOADER_HPP
 
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
 #include <istream>
-#include <vector>
 #include <string>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4512)
-#endif
-#include <boost/lockfree/spsc_queue.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
+#include <vector>
 
 #include <KFL/ResIdentifier.hpp>
 #include <KFL/Thread.hpp>
 
+#if defined(KLAYGE_PLATFORM_ANDROID)
+struct AAsset;
+#endif
+
 namespace KlayGE
 {
-	class KLAYGE_CORE_API ResLoadingDesc
+	class KLAYGE_CORE_API ResLoadingDesc : boost::noncopyable
 	{
 	public:
-		virtual ~ResLoadingDesc()
-		{
-		}
+		virtual ~ResLoadingDesc() noexcept;
 
 		virtual uint64_t Type() const = 0;
 
 		virtual bool StateLess() const = 0;
 
+		virtual std::shared_ptr<void> CreateResource()
+		{
+			return std::shared_ptr<void>();
+		}
 		virtual void SubThreadStage() = 0;
-		virtual shared_ptr<void> MainThreadStage() = 0;
+		virtual void MainThreadStage() = 0;
 
 		virtual bool HasSubThreadStage() const = 0;
 
 		virtual bool Match(ResLoadingDesc const & rhs) const = 0;
 		virtual void CopyDataFrom(ResLoadingDesc const & rhs) = 0;
-		virtual shared_ptr<void> CloneResourceFrom(shared_ptr<void> const & resource) = 0;
+		virtual std::shared_ptr<void> CloneResourceFrom(std::shared_ptr<void> const & resource) = 0;
+
+		virtual std::shared_ptr<void> Resource() const = 0;
 	};
 
-	class KLAYGE_CORE_API ResLoader
+	class KLAYGE_CORE_API ResLoader final : boost::noncopyable
 	{
-		template <typename T>
-		class EmptyFuncToT
-		{
-		public:
-			explicit EmptyFuncToT(function<shared_ptr<void>()> const & func)
-				: func_(func)
-			{
-			}
-
-			shared_ptr<T> operator()()
-			{
-				return static_pointer_cast<T>(func_());
-			}
-
-		private:
-			function<shared_ptr<void>()> func_;
-		};
-
-		class ASyncRecreateFunctor
-		{
-		public:
-			ASyncRecreateFunctor(shared_ptr<void> const & res,
-				ResLoadingDescPtr const & res_desc, shared_ptr<volatile bool> const & is_done);
-
-			shared_ptr<void> operator()();
-
-		private:
-			shared_ptr<void> res_;
-			ResLoadingDescPtr res_desc_;
-			shared_ptr<volatile bool> is_done_;
-		};
-
-		class ASyncReuseFunctor
-		{
-		public:
-			explicit ASyncReuseFunctor(shared_ptr<void> const & res);
-
-			shared_ptr<void> operator()();
-
-		private:
-			shared_ptr<void> res_;
-		};
-
 	public:
 		ResLoader();
 		~ResLoader();
@@ -127,61 +84,100 @@ namespace KlayGE
 		void Suspend();
 		void Resume();
 
-		void AddPath(std::string const & path);
-		void DelPath(std::string const & path);
+		void AddPath(std::string_view phy_path);
+		void DelPath(std::string_view phy_path);
+		bool IsInPath(std::string_view phy_path);
+		std::string const & LocalFolder() const
+		{
+			return local_path_;
+		}
 
-		ResIdentifierPtr Open(std::string const & name);
-		std::string Locate(std::string const & name);
-		std::string AbsPath(std::string const & path);
+		void Mount(std::string_view virtual_path, std::string_view phy_path);
+		void Unmount(std::string_view virtual_path, std::string_view phy_path);
 
-		shared_ptr<void> SyncQuery(ResLoadingDescPtr const & res_desc);
-		function<shared_ptr<void>()> ASyncQuery(ResLoadingDescPtr const & res_desc);
-		void Unload(shared_ptr<void> const & res);
+		ResIdentifierPtr Open(std::string_view name);
+		std::string Locate(std::string_view name);
+		uint64_t Timestamp(std::string_view name);
+		std::string AbsPath(std::string_view path);
+
+		std::shared_ptr<void> SyncQuery(ResLoadingDescPtr const & res_desc);
+		std::shared_ptr<void> ASyncQuery(ResLoadingDescPtr const & res_desc);
+		void Unload(std::shared_ptr<void> const & res);
 
 		template <typename T>
-		shared_ptr<T> SyncQueryT(ResLoadingDescPtr const & res_desc)
+		std::shared_ptr<T> SyncQueryT(ResLoadingDescPtr const & res_desc)
 		{
-			return static_pointer_cast<T>(this->SyncQuery(res_desc));
+			return std::static_pointer_cast<T>(this->SyncQuery(res_desc));
 		}
 
 		template <typename T>
-		function<shared_ptr<T>()> ASyncQueryT(ResLoadingDescPtr const & res_desc)
+		std::shared_ptr<T> ASyncQueryT(ResLoadingDescPtr const & res_desc)
 		{
-			return EmptyFuncToT<T>(this->ASyncQuery(res_desc));
+			return std::static_pointer_cast<T>(this->ASyncQuery(res_desc));
 		}
 
 		template <typename T>
-		void Unload(shared_ptr<T> const & res)
+		void Unload(std::shared_ptr<T> const & res)
 		{
-			this->Unload(static_pointer_cast<void>(res));
+			this->Unload(std::static_pointer_cast<void>(res));
 		}
 
 		void Update();
 
-	private:
-		std::string RealPath(std::string const & path);
+		uint32_t NumLoadingResources() const
+		{
+			return static_cast<uint32_t>(loading_res_.size());
+		}
 
-		void AddLoadedResource(ResLoadingDescPtr const & res_desc, shared_ptr<void> const & res);
-		shared_ptr<void> FindMatchLoadedResource(ResLoadingDescPtr const & res_desc);
+	private:
+		std::string RealPath(std::string_view path);
+		std::string RealPath(std::string_view path,
+			std::string& package_path, std::string& password, std::string& path_in_package);
+		void DecomposePackageName(std::string_view path,
+			std::string& package_path, std::string& password, std::string& path_in_package);
+
+		void AddLoadedResource(ResLoadingDescPtr const & res_desc, std::shared_ptr<void> const & res);
+		std::shared_ptr<void> FindMatchLoadedResource(ResLoadingDescPtr const & res_desc);
 		void RemoveUnrefResources();
 
 		void LoadingThreadFunc();
 
+#if defined(KLAYGE_PLATFORM_ANDROID)
+		AAsset* LocateFileAndroid(std::string_view name);
+#elif defined(KLAYGE_PLATFORM_IOS)
+		std::string LocateFileIOS(std::string_view name);
+#elif defined(KLAYGE_PLATFORM_WINDOWS_STORE)
+		std::string LocateFileWinRT(std::string_view name);
+#endif
+
 	private:
-		static shared_ptr<ResLoader> res_loader_instance_;
+		static std::unique_ptr<ResLoader> res_loader_instance_;
+
+		enum LoadingStatus
+		{
+			LS_Loading,
+			LS_Complete,
+			LS_CanBeRemoved
+		};
 
 		std::string exe_path_;
-		std::vector<std::string> paths_;
+		std::string local_path_;
+		std::vector<std::tuple<uint64_t, uint32_t, std::string, PackagePtr>> paths_;
+		std::mutex paths_mutex_;
 
-		mutex loading_mutex_;
-		std::vector<std::pair<ResLoadingDescPtr, weak_ptr<void> > > loaded_res_;
-		std::vector<std::pair<ResLoadingDescPtr, shared_ptr<volatile bool> > > loading_res_;
-		boost::lockfree::spsc_queue<std::pair<ResLoadingDescPtr, shared_ptr<volatile bool> >,
-			boost::lockfree::capacity<1024> > loading_res_queue_;
+		std::mutex loaded_mutex_;
+		std::mutex loading_mutex_;
+		std::vector<std::pair<ResLoadingDescPtr, std::weak_ptr<void>>> loaded_res_;
+		std::vector<std::pair<ResLoadingDescPtr, std::shared_ptr<volatile LoadingStatus>>> loading_res_;
 
-		shared_ptr<joiner<void> > loading_thread_;
-		bool quit_;
+		bool non_empty_loading_res_queue_ = false;
+		std::condition_variable loading_res_queue_cv_;
+		std::mutex loading_res_queue_mutex_;
+		std::vector<std::pair<ResLoadingDescPtr, std::shared_ptr<volatile LoadingStatus>>> loading_res_queue_;
+
+		std::unique_ptr<joiner<void>> loading_thread_;
+		volatile bool quit_{false};
 	};
 }
 
-#endif			// _KLAYGE_RESLOADER_HPP
+#endif			// KLAYGE_CORE_RESLOADER_HPP

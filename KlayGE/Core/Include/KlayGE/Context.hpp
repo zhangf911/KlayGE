@@ -33,12 +33,12 @@
 #include <string>
 #include <boost/assert.hpp>
 
-#ifdef KLAYGE_PLATFORM_ANDROID
-#include <android_native_app_glue.h>
-#endif
-
 #include <KlayGE/RenderSettings.hpp>
 #include <KFL/DllLoader.hpp>
+
+#ifdef KLAYGE_PLATFORM_ANDROID
+struct android_app;
+#endif
 
 namespace KlayGE
 {
@@ -59,7 +59,7 @@ namespace KlayGE
 		bool location_sensor;
 	};
 
-	class KLAYGE_CORE_API Context
+	class KLAYGE_CORE_API Context final : boost::noncopyable
 	{
 	public:
 		Context();
@@ -74,6 +74,11 @@ namespace KlayGE
 		android_app* AppState() const
 		{
 			return state_;
+		}
+
+		void AppState(android_app* state)
+		{
+			state_ = state;
 		}
 #endif
 
@@ -91,6 +96,10 @@ namespace KlayGE
 		void LoadSceneManager(std::string const & sm_name);
 		void LoadAudioDataSourceFactory(std::string const & adsf_name);
 
+#if KLAYGE_IS_DEV_PLATFORM
+		void LoadDevHelper();
+#endif
+
 		void AppInstance(App3DFramework& app)
 		{
 			app_ = &app;
@@ -101,95 +110,65 @@ namespace KlayGE
 		}
 		App3DFramework& AppInstance()
 		{
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 6011)
-#endif
 			BOOST_ASSERT(app_);
+			KLAYGE_ASSUME(app_);
 			return *app_;
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
 		}
 
-		void SceneManagerInstance(SceneManagerPtr const & mgr)
-		{
-			scene_mgr_ = mgr;
-		}
 		bool SceneManagerValid() const
 		{
-			return !!scene_mgr_;
+			return scene_mgr_.get() != nullptr;
 		}
 		SceneManager& SceneManagerInstance();
 
-		void RenderFactoryInstance(RenderFactoryPtr const & factory)
-		{
-			render_factory_ = factory;
-		}
 		bool RenderFactoryValid() const
 		{
-			return !!render_factory_;
+			return render_factory_.get() != nullptr;
 		}
 		RenderFactory& RenderFactoryInstance();
 
-		void AudioFactoryInstance(AudioFactoryPtr const & factory)
-		{
-			audio_factory_ = factory;
-		}
 		bool AudioFactoryValid() const
 		{
-			return !!audio_factory_;
+			return audio_factory_.get() != nullptr;
 		}
 		AudioFactory& AudioFactoryInstance();
 
-		void InputFactoryInstance(InputFactoryPtr const & factory)
-		{
-			input_factory_ = factory;
-		}
 		bool InputFactoryValid() const
 		{
-			return !!input_factory_;
+			return input_factory_.get() != nullptr;
 		}
 		InputFactory& InputFactoryInstance();
 
-		void ShowFactoryInstance(ShowFactoryPtr const & factory)
-		{
-			show_factory_ = factory;
-		}
 		bool ShowFactoryValid() const
 		{
-			return !!show_factory_;
+			return show_factory_.get() != nullptr;
 		}
 		ShowFactory& ShowFactoryInstance();
 
-		void ScriptFactoryInstance(ScriptFactoryPtr const & factory)
-		{
-			script_factory_ = factory;
-		}
 		bool ScriptFactoryValid() const
 		{
-			return !!script_factory_;
+			return script_factory_.get() != nullptr;
 		}
 		ScriptFactory& ScriptFactoryInstance();
 
-		void AudioDataSourceFactoryInstance(AudioDataSourceFactoryPtr const & factory)
-		{
-			audio_data_src_factory_ = factory;
-		}
 		bool AudioDataSourceFactoryValid() const
 		{
-			return !!audio_data_src_factory_;
+			return audio_data_src_factory_.get() != nullptr;
 		}
 		AudioDataSourceFactory& AudioDataSourceFactoryInstance();
 
-		void DeferredRenderingLayerInstance(DeferredRenderingLayerPtr const & drl)
+		DeferredRenderingLayer* DeferredRenderingLayerInstance()
 		{
-			deferred_rendering_layer_ = drl;
+			return deferred_rendering_layer_.get();
 		}
-		DeferredRenderingLayerPtr const & DeferredRenderingLayerInstance()
+
+#if KLAYGE_IS_DEV_PLATFORM
+		bool DevHelperValid() const
 		{
-			return deferred_rendering_layer_;
+			return dev_helper_.get() != nullptr;
 		}
+		DevHelper& DevHelperInstance();
+#endif
 
 		thread_pool& ThreadPool()
 		{
@@ -200,7 +179,7 @@ namespace KlayGE
 		void DestroyAll();
 
 	private:
-		static shared_ptr<Context> context_instance_;
+		static std::unique_ptr<Context> context_instance_;
 
 		ContextCfg cfg_;
 
@@ -210,15 +189,19 @@ namespace KlayGE
 
 		App3DFramework*		app_;
 
-		SceneManagerPtr		scene_mgr_;
+		std::unique_ptr<SceneManager> scene_mgr_;
 
-		RenderFactoryPtr	render_factory_;
-		AudioFactoryPtr		audio_factory_;
-		InputFactoryPtr		input_factory_;
-		ShowFactoryPtr		show_factory_;
-		ScriptFactoryPtr	script_factory_;
-		AudioDataSourceFactoryPtr audio_data_src_factory_;
-		DeferredRenderingLayerPtr deferred_rendering_layer_;
+		std::unique_ptr<RenderFactory> render_factory_;
+		std::unique_ptr<AudioFactory> audio_factory_;
+		std::unique_ptr<InputFactory> input_factory_;
+		std::unique_ptr<ShowFactory> show_factory_;
+		std::unique_ptr<ScriptFactory> script_factory_;
+		std::unique_ptr<AudioDataSourceFactory> audio_data_src_factory_;
+		std::unique_ptr<DeferredRenderingLayer> deferred_rendering_layer_;
+
+#if KLAYGE_IS_DEV_PLATFORM
+		std::unique_ptr<DevHelper> dev_helper_;
+#endif
 
 		DllLoader render_loader_;
 		DllLoader audio_loader_;
@@ -228,7 +211,11 @@ namespace KlayGE
 		DllLoader sm_loader_;
 		DllLoader ads_loader_;
 
-		shared_ptr<thread_pool> gtp_instance_;
+#if KLAYGE_IS_DEV_PLATFORM
+		DllLoader dev_helper_loader_;
+#endif
+
+		std::unique_ptr<thread_pool> gtp_instance_;
 	};
 }
 

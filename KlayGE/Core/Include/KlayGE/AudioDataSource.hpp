@@ -1,20 +1,35 @@
-// AudioDataSource.hpp
-// KlayGE 音频数据源引擎 头文件
-// Ver 2.0.4
-// 版权所有(C) 龚敏敏, 2003-2004
-// Homepage: http://www.klayge.org
-//
-// 2.0.4
-// 增加了NullObject (2004.4.7)
-//
-// 2.0.0
-// 初次建立 (2003.7.7)
-//
-// 修改记录
-/////////////////////////////////////////////////////////////////////////////////
+/**
+ * @file AudioDataSource.hpp
+ * @author Minmin Gong
+ *
+ * @section DESCRIPTION
+ *
+ * This source file is part of KlayGE
+ * For the latest info, see http://www.klayge.org
+ *
+ * @section LICENSE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * You may alternatively use this source under the terms of
+ * the KlayGE Proprietary License (KPL). You can obtained such a license
+ * from http://www.klayge.org/licensing/.
+ */
 
-#ifndef _AUDIODATASOURCE_HPP
-#define _AUDIODATASOURCE_HPP
+#ifndef _KLAYGE_CORE_AUDIO_DATA_SOURCE_HPP
+#define _KLAYGE_CORE_AUDIO_DATA_SOURCE_HPP
 
 #pragma once
 
@@ -32,10 +47,10 @@ namespace KlayGE
 		AF_Unknown,
 	};
 
-	class KLAYGE_CORE_API AudioDataSource
+	class KLAYGE_CORE_API AudioDataSource : boost::noncopyable
 	{
 	public:
-		static AudioDataSourcePtr NullObject();
+		virtual ~AudioDataSource() noexcept;
 
 		virtual void Open(ResIdentifierPtr const & file) = 0;
 		virtual void Close() = 0;
@@ -48,21 +63,15 @@ namespace KlayGE
 		virtual size_t Read(void* data, size_t size) = 0;
 		virtual void Reset() = 0;
 
-		virtual ~AudioDataSource();
-
 	protected:
-		AudioFormat		format_;
-		uint32_t				freq_;
+		AudioFormat format_;
+		uint32_t freq_;
 	};
 
-	class KLAYGE_CORE_API AudioDataSourceFactory
+	class KLAYGE_CORE_API AudioDataSourceFactory : boost::noncopyable
 	{
 	public:
-		virtual ~AudioDataSourceFactory()
-		{
-		}
-
-		static AudioDataSourceFactoryPtr NullObject();
+		virtual ~AudioDataSourceFactory() noexcept;
 
 		void Suspend();
 		void Resume();
@@ -77,4 +86,4 @@ namespace KlayGE
 	};
 }
 
-#endif			// _AUDIODATASOURCE_HPP
+#endif			// _KLAYGE_CORE_AUDIO_DATA_SOURCE_HPP

@@ -33,6 +33,10 @@
 
 #pragma once
 
+#include <KlayGE/PreDeclare.hpp>
+
+#include <array>
+
 namespace KlayGE
 {
 	enum TexCompressionMethod
@@ -48,33 +52,16 @@ namespace KlayGE
 		TCEM_Nonuniform,  // { 0.3, 0.59, 0.11 }
 	};
 
-	class KLAYGE_CORE_API TexCompression
+	KLAYGE_CORE_API uint32_t BlockWidth(ElementFormat format);
+	KLAYGE_CORE_API uint32_t BlockHeight(ElementFormat format);
+	KLAYGE_CORE_API uint32_t BlockDepth(ElementFormat format);
+	KLAYGE_CORE_API uint32_t BlockBytes(ElementFormat format);
+	KLAYGE_CORE_API ElementFormat DecodedFormat(ElementFormat format);
+
+	class KLAYGE_CORE_API TexCompression : boost::noncopyable
 	{
 	public:
-		virtual ~TexCompression()
-		{
-		}
-
-		uint32_t BlockWidth() const
-		{
-			return block_width_;
-		}
-		uint32_t BlockHeight() const
-		{
-			return block_height_;
-		}
-		uint32_t BlockDepth() const
-		{
-			return block_depth_;
-		}
-		uint32_t BlockBytes() const
-		{
-			return block_bytes_;
-		}
-		ElementFormat DecodedFormat() const
-		{
-			return decoded_fmt_;
-		}
+		virtual ~TexCompression() noexcept;
 
 		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) = 0;
 		virtual void DecodeBlock(void* output, void const * input) = 0;
@@ -91,14 +78,10 @@ namespace KlayGE
 		virtual void DecodeTex(TexturePtr const & out_tex, TexturePtr const & in_tex);
 
 	protected:
-		uint32_t block_width_;
-		uint32_t block_height_;
-		uint32_t block_depth_;
-		uint32_t block_bytes_;
-		ElementFormat decoded_fmt_;
+		ElementFormat compression_format_;
 	};
 
-	class ARGBColor32 : boost::equality_comparable<ARGBColor32>
+	class ARGBColor32 final : boost::equality_comparable<ARGBColor32>
 	{
 	public:
 		enum
@@ -194,13 +177,13 @@ namespace KlayGE
 		} clr32_;
 	};
 
-	class RGBACluster
+	class RGBACluster final
 	{
 		static int const MAX_NUM_DATA_POINTS = 16;
 
 	public:
 		RGBACluster(ARGBColor32 const * pixels, uint32_t num,
-			function<uint32_t(uint32_t, uint32_t, uint32_t)> const & get_partition);
+			std::function<uint32_t(uint32_t, uint32_t, uint32_t)> const & get_partition);
 
 		float4& Point(uint32_t index)
 		{
@@ -269,13 +252,13 @@ namespace KlayGE
 
 		float4 avg_;
 
-		array<float4, MAX_NUM_DATA_POINTS> data_points_;
-		array<ARGBColor32, MAX_NUM_DATA_POINTS> data_pixels_;
-		array<uint8_t, MAX_NUM_DATA_POINTS> point_map_;
+		std::array<float4, MAX_NUM_DATA_POINTS> data_points_;
+		std::array<ARGBColor32, MAX_NUM_DATA_POINTS> data_pixels_;
+		std::array<uint8_t, MAX_NUM_DATA_POINTS> point_map_;
 		float4 min_clr_;
 		float4 max_clr_;
 
-		function<uint32_t(uint32_t, uint32_t, uint32_t)> get_partition_;
+		std::function<uint32_t(uint32_t, uint32_t, uint32_t)> get_partition_;
 	};
 
 	// Helpers

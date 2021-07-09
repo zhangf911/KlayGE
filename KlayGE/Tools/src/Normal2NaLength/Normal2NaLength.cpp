@@ -1,4 +1,5 @@
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
 #include <KlayGE/Texture.hpp>
 #include <KFL/Math.hpp>
@@ -33,26 +34,25 @@ namespace
 	void DecompressNormalMapSubresource(uint32_t width, uint32_t height, ElementFormat restored_format, 
 		ElementInitData& restored_data, std::vector<uint8_t>& restored_data_block, ElementFormat com_format, ElementInitData const & com_data)
 	{
-		UNREF_PARAM(restored_format);
+		KFL_UNUSED(restored_format);
 
 		std::vector<uint8_t> normals(width * height * 4);
 
 		if (IsCompressedFormat(com_format))
 		{
-			TexCompressionPtr tex_codec;
+			std::unique_ptr<TexCompression> tex_codec;
 			switch (com_format)
 			{
 			case EF_BC3:
-				tex_codec = MakeSharedPtr<TexCompressionBC3>();
+				tex_codec = MakeUniquePtr<TexCompressionBC3>();
 				break;
 
 			case EF_BC5:
-				tex_codec = MakeSharedPtr<TexCompressionBC5>();
+				tex_codec = MakeUniquePtr<TexCompressionBC5>();
 				break;
 
 			default:
-				BOOST_ASSERT(false);
-				break;
+				KFL_UNREACHABLE("Compression formats other than BC3 and BC5 are not supported");
 			}
 
 			for (uint32_t y_base = 0; y_base < height; y_base += 4)
@@ -130,8 +130,8 @@ namespace
 		if (restored_format != EF_ARGB8)
 		{
 			std::vector<uint8_t> argb8_normals(width * height * 4);
-			ResizeTexture(&argb8_normals[0], width * 4, width * height * 4, EF_ARGB8, width, height, 1,
-				&normals[0], width * 4, width * height * 4, restored_format, width, height, 1, false);
+			ResizeTexture(&argb8_normals[0], width * 4, width * height * 4, EF_ARGB8, width, height, 1, &normals[0], width * 4,
+				width * height * 4, restored_format, width, height, 1, TextureFilter::Point);
 			normals.swap(argb8_normals);
 		}
 
@@ -144,18 +144,19 @@ namespace
 
 	void Normal2NaLength(std::string const & in_file, std::string const & out_file, ElementFormat new_format)
 	{
-		Texture::TextureType in_type;
-		uint32_t in_width, in_height, in_depth;
-		uint32_t in_num_mipmaps;
-		uint32_t in_array_size;
-		ElementFormat in_format;
-		std::vector<ElementInitData> in_data;
-		std::vector<uint8_t> in_data_block;
-		LoadTexture(in_file, in_type, in_width, in_height, in_depth, in_num_mipmaps, in_array_size, in_format, in_data, in_data_block);
+		TexturePtr in_tex = LoadSoftwareTexture(in_file);
+		auto const in_type = in_tex->Type();
+		auto const in_width = in_tex->Width(0);
+		auto const in_height = in_tex->Height(0);
+		auto const in_depth = in_tex->Depth(0);
+		auto const in_num_mipmaps = in_tex->NumMipMaps();
+		auto const in_array_size = in_tex->ArraySize();
+		auto const in_format = in_tex->Format();
+		auto const & in_data = checked_cast<SoftwareTexture&>(*in_tex).SubresourceData();
 
 		TexCompressionBC4 bc4_codec;
 
-		std::vector<std::vector<uint8_t> > level_lengths(in_num_mipmaps * in_array_size);
+		std::vector<std::vector<uint8_t>> level_lengths(in_num_mipmaps * in_array_size);
 		std::vector<ElementInitData> new_data(level_lengths.size());
 		for (size_t array_index = 0; array_index < in_array_size; ++ array_index)
 		{
@@ -171,10 +172,9 @@ namespace
 			}
 
 			std::vector<float3> the_normals(in_width * in_height);
-			ResizeTexture(&the_normals[0], in_width * sizeof(float3), in_width * in_height * sizeof(float3),
-				EF_BGR32F, in_width, in_height, 1,
-				restored_data.data, restored_data.row_pitch,
-				restored_data.slice_pitch, EF_ARGB8, in_width, in_height, 1, false);
+			ResizeTexture(&the_normals[0], in_width * sizeof(float3), in_width * in_height * sizeof(float3), EF_BGR32F, in_width, in_height,
+				1, restored_data.data, restored_data.row_pitch, restored_data.slice_pitch, EF_ARGB8, in_width, in_height, 1,
+				TextureFilter::Point);
 
 			{
 				if (IsCompressedFormat(new_format))
@@ -313,7 +313,10 @@ namespace
 			}
 		}
 
-		SaveTexture(out_file, in_type, in_width, in_height, in_depth, in_num_mipmaps, in_array_size, new_format, new_data);
+		TexturePtr out_tex = MakeSharedPtr<SoftwareTexture>(in_type, in_width, in_height, in_depth,
+			in_num_mipmaps, in_array_size, new_format, true);
+		out_tex->CreateHWResource(new_data, nullptr);
+		SaveTexture(out_tex, out_file);
 	}
 }
 
@@ -325,11 +328,11 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	std::string in_file = argv[1];
-	if (ResLoader::Instance().Locate(in_file).empty())
+	std::string in_file = ResLoader::Instance().Locate(argv[1]);
+	if (in_file.empty())
 	{
 		cout << "Couldn't locate " << in_file << endl;
-		ResLoader::Destroy();
+		Context::Destroy();
 		return 1;
 	}
 
@@ -355,7 +358,7 @@ int main(int argc, char* argv[])
 
 	cout << "Na Length map is saved to " << argv[2] << endl;
 
-	ResLoader::Destroy();
+	Context::Destroy();
 
 	return 0;
 }

@@ -40,35 +40,35 @@ namespace KlayGE
 	namespace MathLib
 	{
 		template <typename T>
-		class SimplexNoise
+		class SimplexNoise final
 		{
 		public:
 			static SimplexNoise& Instance();
 
-			T noise(T x, T y);
-			T noise(T x, T y, T z);
+			T noise(T x, T y) noexcept;
+			T noise(T x, T y, T z) noexcept;
 
-			T fBm(T x, T y, int octaves, T lacunarity = T(2), T gain = T(0.5));
-			T fBm(T x, T y, T z, int octaves, T lacunarity = T(2), T gain = T(0.5));
+			T fBm(T x, T y, int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
+			T fBm(T x, T y, T z, int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
 
-			T turbulence(T x, T y, int octaves, T lacunarity = T(2), T gain = T(0.5));
-			T turbulence(T x, T y, T z, int octaves, T lacunarity = T(2), T gain = T(0.5));
+			T turbulence(T x, T y, int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
+			T turbulence(T x, T y, T z, int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
 
-			T tileable_noise(T x, T y, T w, T h);
-			T tileable_noise(T x, T y, T z, T w, T h, T d);
+			T tileable_noise(T x, T y, T w, T h) noexcept;
+			T tileable_noise(T x, T y, T z, T w, T h, T d) noexcept;
 
 			T tileable_fBm(T x, T y, T w, T h,
-				int octaves, T lacunarity = T(2), T gain = T(0.5));
+				int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
 			T tileable_fBm(T x, T y, T z, T w, T h, T d,
-				int octaves, T lacunarity = T(2), T gain = T(0.5));
+				int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
 
 			T tileable_turbulence(T x, T y,
-				T w, T h, int octaves, T lacunarity = T(2), T gain = T(0.5));
+				T w, T h, int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
 			T tileable_turbulence(T x, T y, T z,
-				T w, T h, T d, int octaves, T lacunarity = T(2), T gain = T(0.5));
+				T w, T h, T d, int octaves, T lacunarity = T(2), T gain = T(0.5)) noexcept;
 
 		private:
-			SimplexNoise();
+			SimplexNoise() noexcept;
 
 		private:
 			int p_[512];

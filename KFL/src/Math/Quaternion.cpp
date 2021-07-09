@@ -34,98 +34,62 @@
 
 namespace KlayGE
 {
-	template Quaternion_T<float>::Quaternion_T(float const * rhs);
-	template Quaternion_T<float>::Quaternion_T(float3 const & vec, float s);
-	template Quaternion_T<float>::Quaternion_T(Quaternion const & rhs);
-	template Quaternion_T<float>::Quaternion_T(float x, float y, float z, float w);
-	template Quaternion const & Quaternion_T<float>::Identity();
-	template Quaternion const & Quaternion_T<float>::operator+=(Quaternion const & rhs);
-	template Quaternion const & Quaternion_T<float>::operator-=(Quaternion const & rhs);
-	template Quaternion const & Quaternion_T<float>::operator*=(Quaternion const & rhs);
-	template Quaternion const & Quaternion_T<float>::operator*=(float rhs);
-	template Quaternion const & Quaternion_T<float>::operator/=(float rhs);
-	template Quaternion& Quaternion_T<float>::operator=(Quaternion const & rhs);
-	template Quaternion const Quaternion_T<float>::operator+() const;
-	template Quaternion const Quaternion_T<float>::operator-() const;
-	template float3 const Quaternion_T<float>::v() const;
-	template void Quaternion_T<float>::v(float3 const & rhs);
-	template bool Quaternion_T<float>::operator==(Quaternion const & rhs) const;
-
-
 	template <typename T>
-	Quaternion_T<T>::Quaternion_T(T const * rhs)
-		: quat_(rhs)
-	{
-	}
-	
-	template <typename T>
-	Quaternion_T<T>::Quaternion_T(Vector_T<T, 3> const & vec, T s)
-	{
-		this->x() = vec.x();
-		this->y() = vec.y();
-		this->z() = vec.z();
-		this->w() = s;
-	}
-	
-	template <typename T>
-	Quaternion_T<T>::Quaternion_T(Quaternion_T const & rhs)
+	Quaternion_T<T>::Quaternion_T(Quaternion_T const & rhs) noexcept
 		: quat_(rhs.quat_)
 	{
 	}
-	
+
 	template <typename T>
-	Quaternion_T<T>::Quaternion_T(T x, T y, T z, T w)
+	Quaternion_T<T>::Quaternion_T(Quaternion_T&& rhs) noexcept
+		: quat_(std::move(rhs.quat_))
 	{
-		this->x() = x;
-		this->y() = y;
-		this->z() = z;
-		this->w() = w;
 	}
 
 	template <typename T>
-	Quaternion_T<T> const & Quaternion_T<T>::Identity()
+	Quaternion_T<T> const & Quaternion_T<T>::Identity() noexcept
 	{
 		static Quaternion_T const out(0, 0, 0, 1);
 		return out;
 	}
 
 	template <typename T>
-	Quaternion_T<T> const & Quaternion_T<T>::operator+=(Quaternion_T<T> const & rhs)
+	Quaternion_T<T> const & Quaternion_T<T>::operator+=(Quaternion_T<T> const & rhs) noexcept
 	{
 		quat_ += rhs.quat_;
 		return *this;
 	}
-	
+
 	template <typename T>
-	Quaternion_T<T> const & Quaternion_T<T>::operator-=(Quaternion_T<T> const & rhs)
+	Quaternion_T<T> const & Quaternion_T<T>::operator-=(Quaternion_T<T> const & rhs) noexcept
 	{
 		quat_ -= rhs.quat_;
 		return *this;
 	}
 
 	template <typename T>
-	Quaternion_T<T> const & Quaternion_T<T>::operator*=(Quaternion_T<T> const & rhs)
+	Quaternion_T<T> const & Quaternion_T<T>::operator*=(Quaternion_T<T> const & rhs) noexcept
 	{
 		*this = MathLib::mul(*this, rhs);
 		return *this;
 	}
-	
+
 	template <typename T>
-	Quaternion_T<T> const & Quaternion_T<T>::operator*=(T rhs)
+	Quaternion_T<T> const & Quaternion_T<T>::operator*=(T rhs) noexcept
 	{
 		quat_ *= static_cast<T>(rhs);
 		return *this;
 	}
-	
+
 	template <typename T>
-	Quaternion_T<T> const & Quaternion_T<T>::operator/=(T rhs)
+	Quaternion_T<T> const & Quaternion_T<T>::operator/=(T rhs) noexcept
 	{
 		quat_ /= static_cast<T>(rhs);
 		return *this;
 	}
 
 	template <typename T>
-	Quaternion_T<T>& Quaternion_T<T>::operator=(Quaternion_T const & rhs)
+	Quaternion_T<T>& Quaternion_T<T>::operator=(Quaternion_T const & rhs) noexcept
 	{
 		if (this != &rhs)
 		{
@@ -135,25 +99,32 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	Quaternion_T<T> const Quaternion_T<T>::operator+() const
+	Quaternion_T<T>& Quaternion_T<T>::operator=(Quaternion_T&& rhs) noexcept
+	{
+		quat_ = std::move(rhs.quat_);
+		return *this;
+	}
+
+	template <typename T>
+	Quaternion_T<T> const Quaternion_T<T>::operator+() const noexcept
 	{
 		return *this;
 	}
-	
+
 	template <typename T>
-	Quaternion_T<T> const Quaternion_T<T>::operator-() const
+	Quaternion_T<T> const Quaternion_T<T>::operator-() const noexcept
 	{
 		return Quaternion_T(-this->x(), -this->y(), -this->z(), -this->w());
 	}
 
 	template <typename T>
-	Vector_T<T, 3> const Quaternion_T<T>::v() const
+	Vector_T<T, 3> const Quaternion_T<T>::v() const noexcept
 	{
 		return Vector_T<T, 3>(this->x(), this->y(), this->z());
 	}
-	
+
 	template <typename T>
-	void Quaternion_T<T>::v(Vector_T<T, 3> const & rhs)
+	void Quaternion_T<T>::v(Vector_T<T, 3> const & rhs) noexcept
 	{
 		this->x() = rhs.x();
 		this->y() = rhs.y();
@@ -161,8 +132,11 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	bool Quaternion_T<T>::operator==(Quaternion_T<T> const & rhs) const
+	bool Quaternion_T<T>::operator==(Quaternion_T<T> const & rhs) const noexcept
 	{
 		return quat_ == rhs.quat_;
 	}
+
+
+	template class Quaternion_T<float>;
 }

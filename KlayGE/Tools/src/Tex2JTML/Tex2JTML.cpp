@@ -1,5 +1,37 @@
+/**
+ * @file Tex2JTML.cpp
+ * @author Minmin Gong
+ *
+ * @section DESCRIPTION
+ *
+ * This source file is part of KlayGE
+ * For the latest info, see http://www.klayge.org
+ *
+ * @section LICENSE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * You may alternatively use this source under the terms of
+ * the KlayGE Proprietary License (KPL). You can obtained such a license
+ * from http://www.klayge.org/licensing/.
+ */
+
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
+#include <KFL/StringUtil.hpp>
 #include <KFL/Timer.hpp>
 #include <KlayGE/Texture.hpp>
 #include <KFL/Math.hpp>
@@ -7,61 +39,20 @@
 #include <KlayGE/App3D.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/ResLoader.hpp>
+#include <KFL/CXX17/filesystem.hpp>
 
 #include <iostream>
 #include <fstream>
-#include <sstream>
 #include <vector>
+#include <regex>
 
-#if defined(KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT) || defined(KLAYGE_TR2_LIBRARY_FILESYSTEM_V3_SUPPORT)
-	#include <filesystem>
-	namespace KlayGE
-	{
-		namespace filesystem = std::tr2::sys;
-	}
-#else
-	#include <boost/filesystem.hpp>
-	namespace KlayGE
-	{
-		namespace filesystem = boost::filesystem;
-	}
+#ifndef KLAYGE_DEBUG
+#define CXXOPTS_NO_RTTI
 #endif
-#ifdef KLAYGE_CXX11_LIBRARY_REGEX_SUPPORT
-	#include <regex>
-	namespace KlayGE
-	{
-		using std::regex;
-		using std::regex_match;
-		using std::smatch;
-	}
-#else
-	#include <boost/regex.hpp>
-	namespace KlayGE
-	{
-		using boost::regex;
-		using boost::regex_match;
-		using boost::smatch;
-	}
-#endif
-
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4100 4251 4275 4273 4512 4701 4702)
-#endif
-#include <boost/program_options.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4127 6328)
-#endif
-#include <boost/tokenizer.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
+#include <cxxopts.hpp>
 
 #include <KlayGE/JudaTexture.hpp>
+#include <KlayGE/ToolCommon.hpp>
 
 using namespace std;
 using namespace KlayGE;
@@ -72,50 +63,10 @@ struct TextureDesc
 	uint32_t width;
 	uint32_t height;
 };
-typedef KlayGE::shared_ptr<TextureDesc> TextureDescPtr;
-
-std::string DosWildcardToRegex(std::string const & wildcard)
-{
-	std::string ret;
-	for (size_t i = 0; i < wildcard.size(); ++ i)
-	{
-		switch (wildcard[i])
-		{
-		case '*':
-			ret.append(".*");
-			break;
-
-		case '?':
-			ret.append(".");
-			break;
-
-		case '+':
-		case '(':
-		case ')':
-		case '^':
-		case '$':
-		case '.':
-		case '{':
-		case '}':
-		case '[':
-		case ']':
-		case '|':
-		case '\\':
-			ret.push_back('\\');
-			ret.push_back(wildcard[i]);
-			break;
-
-		default:
-			ret.push_back(wildcard[i]);
-			break;
-		}
-	}
-
-	return ret;
-}
+typedef std::shared_ptr<TextureDesc> TextureDescPtr;
 
 // From http://www.blackpawn.com/texts/lightmaps/default.html
-class TexPackNode : public KlayGE::enable_shared_from_this<TexPackNode>
+class TexPackNode : public std::enable_shared_from_this<TexPackNode>
 {
 public:
 	TexPackNode()
@@ -123,25 +74,14 @@ public:
 	{
 	}
 	
-	KlayGE::shared_ptr<TexPackNode> Insert(TextureDescPtr const & tex_desc)
+	std::shared_ptr<TexPackNode> Insert(TextureDescPtr const & tex_desc)
 	{
-		if (!this->IsLeaf())
-		{
-			// try first child
-			KlayGE::shared_ptr<TexPackNode> new_node = child_[0]->Insert(tex_desc);
-			if (new_node)
-			{
-				return new_node;
-			}
-			// no room, then insert second child
-			return child_[1]->Insert(tex_desc);
-		}
-		else
+		if (this->IsLeaf())
 		{
 			// room don't fit or already have picture here
 			if (!this->CanInsert(tex_desc))
 			{
-				return KlayGE::shared_ptr<TexPackNode>();
+				return std::shared_ptr<TexPackNode>();
 			}
 			// result comes form perfecly fit
 			if (this->CanPerfectlyInsert(tex_desc))
@@ -171,6 +111,17 @@ public:
 			// insert first child we create
 			return child_[0]->Insert(tex_desc);
 		}
+		else
+		{
+			// try first child
+			std::shared_ptr<TexPackNode> new_node = child_[0]->Insert(tex_desc);
+			if (new_node)
+			{
+				return new_node;
+			}
+			// no room, then insert second child
+			return child_[1]->Insert(tex_desc);
+		}
 	}
 	
 	bool IsLeaf()
@@ -193,7 +144,7 @@ public:
 		return (rect_.Width() == tex_desc->width) && (rect_.Height() == tex_desc->height);
 	}
 
-	KlayGE::shared_ptr<TexPackNode> Child(uint32_t index)
+	std::shared_ptr<TexPackNode> Child(uint32_t index)
 	{
 		BOOST_ASSERT(index < 2);
 		return child_[index];
@@ -218,13 +169,13 @@ public:
 	}
 
 private:
-	KlayGE::shared_ptr<TexPackNode> child_[2];
+	std::shared_ptr<TexPackNode> child_[2];
 	KlayGE::Rect_T<uint32_t> rect_;
 	TextureDescPtr tex_desc_;
 };
 
 
-void CalcPackInfo(std::vector<TextureDescPtr>& ta, int num_tiles, int tile_size, KlayGE::shared_ptr<TexPackNode>& root)
+void CalcPackInfo(std::vector<TextureDescPtr>& ta, int num_tiles, int tile_size, std::shared_ptr<TexPackNode>& root)
 {
 	root = MakeSharedPtr<TexPackNode>();
 	int size = num_tiles * tile_size;
@@ -233,7 +184,7 @@ void CalcPackInfo(std::vector<TextureDescPtr>& ta, int num_tiles, int tile_size,
 	// It returns the pointer of the node the lightmap can go into or null to say it can't fit.
 	for (size_t i = 0; i < ta.size(); ++ i)
 	{
-		KlayGE::shared_ptr<TexPackNode> node = root->Insert(ta[i]);
+		std::shared_ptr<TexPackNode> node = root->Insert(ta[i]);
 		if (node)
 		{
 			node->TextureDesc(ta[i]);
@@ -266,9 +217,8 @@ struct JTMLImageRecord
 	uint32_t x, y, h, w;
 	TexAddressingMode u, v;
 };
-typedef std::vector<JTMLImageRecord> JTMLImageRecordArray;
 
-void ConvertTreeToJTML(KlayGE::shared_ptr<TexPackNode> const & node, JTMLImageRecordArray& jirs, int tile_size)
+void ConvertTreeToJTML(std::shared_ptr<TexPackNode> const & node, std::vector<JTMLImageRecord>& jirs, int tile_size)
 {
 	if (node->TextureDesc())
 	{
@@ -289,9 +239,9 @@ void ConvertTreeToJTML(KlayGE::shared_ptr<TexPackNode> const & node, JTMLImageRe
 	}
 }
 
-void WriteJTML(KlayGE::shared_ptr<TexPackNode> const & root, std::string const & jtml_name, int num_tiles, int tile_size, ElementFormat fmt)
+void WriteJTML(std::shared_ptr<TexPackNode> const & root, std::string const & jtml_name, int num_tiles, int tile_size, ElementFormat fmt)
 {
-	JTMLImageRecordArray jirs;
+	std::vector<JTMLImageRecord> jirs;
 	ConvertTreeToJTML(root, jirs, tile_size);
 
 	std::string fmt_str;
@@ -306,8 +256,7 @@ void WriteJTML(KlayGE::shared_ptr<TexPackNode> const & root, std::string const &
 		break;
 
 	default:
-		BOOST_ASSERT(false);
-		break;
+		KFL_UNREACHABLE("Unsupported element format");
 	}
 
 	std::ofstream os(jtml_name.c_str());
@@ -348,7 +297,7 @@ void Tex2JTML(std::vector<std::string>& tex_names, uint32_t num_tiles, uint32_t 
 		cout << " DONE" << endl;
 	}
 
-	KlayGE::shared_ptr<TexPackNode> root;
+	std::shared_ptr<TexPackNode> root;
 	CalcPackInfo(tex_descs, num_tiles, tile_size, root);
 
 	WriteJTML(root, jtml_name, num_tiles, tile_size, EF_ABGR8);
@@ -361,22 +310,21 @@ int main(int argc, char* argv[])
 	std::vector<std::string> tex_names;
 	std::string jtml_name;
 
-	boost::program_options::options_description desc("Allowed options");
-	desc.add_options()
-		("help,H", "Produce help message")
-		("input-name,I", boost::program_options::value<std::string>(), "Input textures names.")
-		("output-name,O", boost::program_options::value<std::string>(), "Output jtml name.")
-		("num-tiles,N", boost::program_options::value<int>(&num_tiles)->default_value(2048), "Number of tiles. Default is 2048.")
-		("tile-size,T", boost::program_options::value<int>(&tile_size)->default_value(128), "Tile size. Default is 128.")
-		("version,v", "Version.");
+	cxxopts::Options options("ImageConv", "KlayGE Tex2JTML Generator");
+	options.add_options()
+		("H,help", "Produce help message.")
+		("I,input-name", "Input textures names.", cxxopts::value<std::string>())
+		("O,output-name", "Output jtml name.", cxxopts::value<std::string>())
+		("N,num-tiles", "Number of tiles.", cxxopts::value<int>(num_tiles)->default_value("2048"))
+		("T,tile-size", "Tile size.", cxxopts::value<int>(tile_size)->default_value("128"))
+		("v,version", "Version.");
 
-	boost::program_options::variables_map vm;
-	boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
-	boost::program_options::notify(vm);
+	int const argc_backup = argc;
+	auto vm = options.parse(argc, argv);
 
-	if ((argc <= 1) || (vm.count("help") > 0))
+	if ((argc_backup <= 1) || (vm.count("help") > 0))
 	{
-		cout << desc << endl;
+		cout << options.help() << endl;
 		return 1;
 	}
 	if (vm.count("version") > 0)
@@ -388,33 +336,32 @@ int main(int argc, char* argv[])
 	{
 		std::string input_name_str = vm["input-name"].as<std::string>();
 
-		boost::char_separator<char> sep("", ",;");
-		boost::tokenizer<boost::char_separator<char> > tok(input_name_str, sep);
-		for (KLAYGE_AUTO(beg, tok.begin()); beg != tok.end(); ++ beg)
+		std::vector<std::string_view> tokens = StringUtil::Split(input_name_str, StringUtil::IsAnyOf(",;"));
+		for (auto& arg : tokens)
 		{
-			std::string arg = *beg;
-			if ((std::string::npos == arg.find("*")) && (std::string::npos == arg.find("?")))
+			arg = StringUtil::Trim(arg);
+			if ((std::string::npos == arg.find('*')) && (std::string::npos == arg.find('?')))
 			{
-				tex_names.push_back(arg);
+				tex_names.push_back(std::string(arg));
 			}
 			else
 			{
-				regex const filter(DosWildcardToRegex(arg));
+				filesystem::path arg_path(arg.begin(), arg.end());
+				auto const parent = arg_path.parent_path();
+				auto const file_name = arg_path.filename();
+
+				std::regex const filter(DosWildcardToRegex(file_name.string()));
 
 				filesystem::directory_iterator end_itr;
-				for (filesystem::directory_iterator i("."); i != end_itr; ++ i)
+				for (filesystem::directory_iterator i(parent); i != end_itr; ++ i)
 				{
 					if (filesystem::is_regular_file(i->status()))
 					{
-						smatch what;
-#ifdef KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT
-						std::string const name = i->path().filename();
-#else
+						std::smatch what;
 						std::string const name = i->path().filename().string();
-#endif
-						if (regex_match(name, what, filter))
+						if (std::regex_match(name, what, filter))
 						{
-							tex_names.push_back(name);
+							tex_names.push_back((parent / name).string());
 						}
 					}
 				}
@@ -424,6 +371,7 @@ int main(int argc, char* argv[])
 	else
 	{
 		cout << "Need input textures names." << endl;
+		cout << options.help() << endl;
 		return 1;
 	}
 	if (vm.count("output-name") > 0)
@@ -438,7 +386,7 @@ int main(int argc, char* argv[])
 
 	Tex2JTML(tex_names, num_tiles, tile_size, jtml_name);
 
-	ResLoader::Destroy();
+	Context::Destroy();
 
 	return 0;
 }

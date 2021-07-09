@@ -38,18 +38,18 @@
 #include <DXBC2GLSL/ShaderDefs.hpp>
 #include <DXBC2GLSL/Utils.hpp>
 
-#define FOURCC_DXBC KlayGE::MakeFourCC<'D', 'X', 'B', 'C'>::value // DirectX byte code
-#define FOURCC_RDEF KlayGE::MakeFourCC<'R', 'D', 'E', 'F'>::value // Resource definition
-#define FOURCC_ISGN KlayGE::MakeFourCC<'I', 'S', 'G', 'N'>::value // Input signature
-#define FOURCC_OSGN KlayGE::MakeFourCC<'O', 'S', 'G', 'N'>::value // Output signature
-#define FOURCC_SHDR KlayGE::MakeFourCC<'S', 'H', 'D', 'R'>::value // Shader model 4 code
-#define FOURCC_SHEX KlayGE::MakeFourCC<'S', 'H', 'E', 'X'>::value // Shader model 5 code
-#define FOURCC_PCSG KlayGE::MakeFourCC<'P', 'C', 'S', 'G'>::value // Patch signature
-#define FOURCC_IFCH KlayGE::MakeFourCC<'I', 'F', 'C', 'E'>::value // Interface (for dynamic linking)
-#define FOURCC_OSG5 KlayGE::MakeFourCC<'O', 'S', 'G', '5'>::value // Input signature in shader model 5
-#define FOURCC_ISG1 KlayGE::MakeFourCC<'I', 'S', 'G', '1'>::value // Input signature with Stream and MinPrecision in D3D 11.1
-#define FOURCC_OSG1 KlayGE::MakeFourCC<'O', 'S', 'G', '1'>::value // Output signature with Stream and MinPrecision in D3D 11.1
-#define FOURCC_PSG1 KlayGE::MakeFourCC<'P', 'S', 'G', '1'>::value // Patch signature in D3D 11.1
+#define FOURCC_DXBC (KlayGE::MakeFourCC<'D', 'X', 'B', 'C'>::value) // DirectX byte code
+#define FOURCC_RDEF (KlayGE::MakeFourCC<'R', 'D', 'E', 'F'>::value) // Resource definition
+#define FOURCC_ISGN (KlayGE::MakeFourCC<'I', 'S', 'G', 'N'>::value) // Input signature
+#define FOURCC_OSGN (KlayGE::MakeFourCC<'O', 'S', 'G', 'N'>::value) // Output signature
+#define FOURCC_SHDR (KlayGE::MakeFourCC<'S', 'H', 'D', 'R'>::value) // Shader model 4 code
+#define FOURCC_SHEX (KlayGE::MakeFourCC<'S', 'H', 'E', 'X'>::value) // Shader model 5 code
+#define FOURCC_PCSG (KlayGE::MakeFourCC<'P', 'C', 'S', 'G'>::value) // Patch signature
+#define FOURCC_IFCH (KlayGE::MakeFourCC<'I', 'F', 'C', 'E'>::value) // Interface (for dynamic linking)
+#define FOURCC_OSG5 (KlayGE::MakeFourCC<'O', 'S', 'G', '5'>::value) // Input signature in shader model 5
+#define FOURCC_ISG1 (KlayGE::MakeFourCC<'I', 'S', 'G', '1'>::value) // Input signature with Stream and MinPrecision in D3D 11.1
+#define FOURCC_OSG1 (KlayGE::MakeFourCC<'O', 'S', 'G', '1'>::value) // Output signature with Stream and MinPrecision in D3D 11.1
+#define FOURCC_PSG1 (KlayGE::MakeFourCC<'P', 'S', 'G', '1'>::value) // Patch signature in D3D 11.1
 
 #ifdef KLAYGE_HAS_STRUCT_PACK
 #pragma pack(push, 1)
@@ -60,6 +60,7 @@ struct DXBCChunkHeader
 	uint32_t fourcc;
 	uint32_t size;
 };
+KLAYGE_STATIC_ASSERT(sizeof(DXBCChunkHeader) == 8);
 
 // this is always little-endian!
 struct DXBCChunkSignatureHeader : public DXBCChunkHeader
@@ -67,6 +68,7 @@ struct DXBCChunkSignatureHeader : public DXBCChunkHeader
 	uint32_t count;
 	uint32_t offset;
 };
+KLAYGE_STATIC_ASSERT(sizeof(DXBCChunkSignatureHeader) == 16);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 #pragma pack(pop)
 #endif
@@ -85,7 +87,9 @@ struct DXBCShaderVariableDesc
 	uint32_t sampler_size;
 };
 
-// Same layout with D3D11_SHADER_TYPE_DESC
+struct DXBCShaderMemberDesc;
+
+// Similar to D3D11_SHADER_TYPE_DESC, except member_desc
 struct DXBCShaderTypeDesc
 {
 	ShaderVariableClass var_class;
@@ -96,6 +100,15 @@ struct DXBCShaderTypeDesc
 	uint32_t members;
 	uint32_t offset;
 	char const * name;
+
+	std::vector<DXBCShaderMemberDesc> member_desc;
+};
+
+struct DXBCShaderMemberDesc
+{
+	char const* name;
+	uint32_t start_offset;
+	DXBCShaderTypeDesc type;
 };
 
 // Same layout with D3D11_SHADER_BUFFER_DESC
@@ -190,7 +203,7 @@ enum DXBCFindSignature
 	DFS_OUTPUT1
 };
 
-KlayGE::shared_ptr<DXBCContainer> DXBCParse(void const * data);
+std::shared_ptr<DXBCContainer> DXBCParse(void const * data);
 DXBCChunkHeader const * DXBCFindChunk(void const * data, uint32_t fourcc);
 DXBCChunkHeader const * DXBCFindShaderBytecode(void const * data);
 DXBCChunkSignatureHeader const * DXBCFindSignature(void const * data, uint32_t kind);

@@ -30,12 +30,18 @@
 
 #include <KlayGE/KlayGE.hpp>
 #include <KFL/Util.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/App3D.hpp>
 #include <KlayGE/Window.hpp>
 
+#include <system_error>
+
 #include <KlayGE/MsgInput/MInput.hpp>
+
+#if defined(KLAYGE_PLATFORM_WINDOWS)
+#include <xinput.h>
+#endif
 
 namespace KlayGE
 {
@@ -50,46 +56,42 @@ namespace KlayGE
 
 		if (mod_hid_ != nullptr)
 		{
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
 			DynamicHidP_GetCaps_ = reinterpret_cast<HidP_GetCapsFunc>(::GetProcAddress(mod_hid_, "HidP_GetCaps"));
 			DynamicHidP_GetButtonCaps_ = reinterpret_cast<HidP_GetButtonCapsFunc>(::GetProcAddress(mod_hid_, "HidP_GetButtonCaps"));
 			DynamicHidP_GetValueCaps_ = reinterpret_cast<HidP_GetValueCapsFunc>(::GetProcAddress(mod_hid_, "HidP_GetValueCaps"));
 			DynamicHidP_GetUsages_ = reinterpret_cast<HidP_GetUsagesFunc>(::GetProcAddress(mod_hid_, "HidP_GetUsages"));
 			DynamicHidP_GetUsageValue_ = reinterpret_cast<HidP_GetUsageValueFunc>(::GetProcAddress(mod_hid_, "HidP_GetUsageValue"));
-		}
-
-#if (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)
-		HMODULE mod_user = ::GetModuleHandle(TEXT("user32"));
-		BOOST_ASSERT(mod_user != nullptr);
-
-		DynamicRegisterTouchWindow_ = reinterpret_cast<RegisterTouchWindowFunc>(::GetProcAddress(mod_user, "RegisterTouchWindow"));
-		DynamicGetTouchInputInfo_ = reinterpret_cast<GetTouchInputInfoFunc>(::GetProcAddress(mod_user, "GetTouchInputInfo"));
-		DynamicCloseTouchInputHandle_ = reinterpret_cast<CloseTouchInputHandleFunc>(::GetProcAddress(mod_user, "CloseTouchInputHandle"));
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic pop
 #endif
+		}
 #endif
 	}
 
 	MsgInputEngine::~MsgInputEngine()
 	{
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
-		on_raw_input_.disconnect();
-#elif defined KLAYGE_PLATFORM_ANDROID
-		on_key_down_.disconnect();
-		on_key_up_.disconnect();
-		on_mouse_down_.disconnect();
-		on_mouse_up_.disconnect();
-		on_mouse_move_.disconnect();
-		on_mouse_wheel_.disconnect();
-		on_joystick_axis_.disconnect();
-		on_joystick_buttons_.disconnect();
-#elif defined KLAYGE_PLATFORM_DARWIN
-		on_key_down_.disconnect();
-		on_key_up_.disconnect();
+		on_raw_input_.Disconnect();
+#elif defined(KLAYGE_PLATFORM_WINDOWS_STORE) || defined(KLAYGE_PLATFORM_ANDROID) || defined(KLAYGE_PLATFORM_DARWIN)
+		on_key_down_.Disconnect();
+		on_key_up_.Disconnect();
+#if defined KLAYGE_PLATFORM_ANDROID
+		on_mouse_down_.Disconnect();
+		on_mouse_up_.Disconnect();
+		on_mouse_move_.Disconnect();
+		on_mouse_wheel_.Disconnect();
+		on_joystick_axis_.Disconnect();
+		on_joystick_buttons_.Disconnect();
 #endif
-		on_touch_.disconnect();
-		on_pointer_down_.disconnect();
-		on_pointer_up_.disconnect();
-		on_pointer_update_.disconnect();
-		on_pointer_wheel_.disconnect();
+#endif
+		on_pointer_down_.Disconnect();
+		on_pointer_up_.Disconnect();
+		on_pointer_update_.Disconnect();
+		on_pointer_wheel_.Disconnect();
 		devices_.clear();
 
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
@@ -126,23 +128,23 @@ namespace KlayGE
 		UINT devices = 0;
 		if (::GetRawInputDeviceList(nullptr, &devices, sizeof(RAWINPUTDEVICELIST)) != 0)
 		{
-			THR(errc::function_not_supported);
+			TERRC(std::errc::function_not_supported);
 		}
 
-		std::vector<RAWINPUTDEVICELIST> raw_input_devices(devices);
-		::GetRawInputDeviceList(&raw_input_devices[0], &devices, sizeof(raw_input_devices[0]));
+		auto raw_input_devices = MakeUniquePtr<RAWINPUTDEVICELIST[]>(devices);
+		::GetRawInputDeviceList(raw_input_devices.get(), &devices, sizeof(raw_input_devices[0]));
 
 		RAWINPUTDEVICE rid;
 		rid.usUsagePage = HID_USAGE_PAGE_GENERIC;
 		rid.hwndTarget = hwnd;
 		std::vector<RAWINPUTDEVICE> rids;
-		for (size_t i = 0; i < raw_input_devices.size(); ++ i)
+		for (size_t i = 0; i < devices; ++ i)
 		{
 			InputDevicePtr device;
 			switch (raw_input_devices[i].dwType)
 			{
 			case RIM_TYPEKEYBOARD:
-				device = MakeSharedPtr<MsgInputKeyboard>(hwnd, raw_input_devices[i].hDevice);
+				device = MakeSharedPtr<MsgInputKeyboard>();
 				rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;
 				rid.dwFlags = 0;
 				rids.push_back(rid);
@@ -160,13 +162,13 @@ namespace KlayGE
 					UINT size = 0;
 					if (0 == ::GetRawInputDeviceInfo(raw_input_devices[i].hDevice, RIDI_DEVICEINFO, nullptr, &size))
 					{
-						std::vector<uint8_t> buf(size);
-						::GetRawInputDeviceInfo(raw_input_devices[i].hDevice, RIDI_DEVICEINFO, &buf[0], &size);
+						auto buf = MakeUniquePtr<uint8_t[]>(size);
+						::GetRawInputDeviceInfo(raw_input_devices[i].hDevice, RIDI_DEVICEINFO, buf.get(), &size);
 
-						RID_DEVICE_INFO* info = reinterpret_cast<RID_DEVICE_INFO*>(&buf[0]);
-						if ((HID_USAGE_PAGE_GENERIC == info->hid.usUsagePage)
-							&& ((HID_USAGE_GENERIC_GAMEPAD == info->hid.usUsage)
-								|| (HID_USAGE_GENERIC_JOYSTICK == info->hid.usUsage)))
+						RID_DEVICE_INFO* info = reinterpret_cast<RID_DEVICE_INFO*>(buf.get());
+						if ((HID_USAGE_PAGE_GENERIC == info->hid.usUsagePage) &&
+							((HID_USAGE_GENERIC_GAMEPAD == info->hid.usUsage) || (HID_USAGE_GENERIC_JOYSTICK == info->hid.usUsage)) &&
+							(info->hid.dwVendorId != 0x045E)) // 0x045E is Microsoft XInput controller
 						{
 							device = MakeSharedPtr<MsgInputJoystick>(raw_input_devices[i].hDevice);
 							rid.usUsage = HID_USAGE_GENERIC_GAMEPAD;
@@ -192,69 +194,99 @@ namespace KlayGE
 
 		if (::RegisterRawInputDevices(&rids[0], static_cast<UINT>(rids.size()), sizeof(rids[0])))
 		{
-			on_raw_input_ = main_wnd->OnRawInput().connect(bind(&MsgInputEngine::OnRawInput, this,
-				placeholders::_1, placeholders::_2));
+			on_raw_input_ = main_wnd->OnRawInput().Connect(
+				[this](Window const & wnd, HRAWINPUT ri)
+				{
+					this->OnRawInput(wnd, ri);
+				});
 		}
-#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
-		on_pointer_down_ = main_wnd->OnPointerDown().connect(KlayGE::bind(&MsgInputEngine::OnPointerDown, this,
-			KlayGE::placeholders::_2, placeholders::_3));
-		on_pointer_up_ = main_wnd->OnPointerUp().connect(KlayGE::bind(&MsgInputEngine::OnPointerUp, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3));
-		on_pointer_update_ = main_wnd->OnPointerUpdate().connect(KlayGE::bind(&MsgInputEngine::OnPointerUpdate, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3, KlayGE::placeholders::_4));
-		on_pointer_wheel_ = main_wnd->OnPointerWheel().connect(KlayGE::bind(&MsgInputEngine::OnPointerWheel, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3, KlayGE::placeholders::_4));
-		devices_.push_back(MakeSharedPtr<MsgInputTouch>());
-#elif (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)
-		if (::GetSystemMetrics(SM_DIGITIZER) & NID_READY)
-		{
-			if (this->RegisterTouchWindow(hwnd, TWF_WANTPALM))
+#elif defined(KLAYGE_PLATFORM_WINDOWS_STORE) || defined(KLAYGE_PLATFORM_ANDROID) || defined(KLAYGE_PLATFORM_DARWIN)
+		on_key_down_ = main_wnd->OnKeyDown().Connect(
+			[this](Window const & wnd, uint32_t key)
 			{
-				on_touch_ = main_wnd->OnTouch().connect(KlayGE::bind(&MsgInputEngine::OnTouch, this,
-					KlayGE::placeholders::_1, KlayGE::placeholders::_2, KlayGE::placeholders::_3));
-				devices_.push_back(MakeSharedPtr<MsgInputTouch>());
-			}
-		}
-#endif
-#elif (defined KLAYGE_PLATFORM_WINDOWS_RUNTIME) || (defined KLAYGE_PLATFORM_ANDROID) || (defined KLAYGE_PLATFORM_DARWIN) || (defined KLAYGE_PLATFORM_IOS)
-		on_pointer_down_ = main_wnd->OnPointerDown().connect(KlayGE::bind(&MsgInputEngine::OnPointerDown, this,
-			KlayGE::placeholders::_2, placeholders::_3));
-		on_pointer_up_ = main_wnd->OnPointerUp().connect(KlayGE::bind(&MsgInputEngine::OnPointerUp, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3));
-		on_pointer_update_ = main_wnd->OnPointerUpdate().connect(KlayGE::bind(&MsgInputEngine::OnPointerUpdate, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3, KlayGE::placeholders::_4));
-		on_pointer_wheel_ = main_wnd->OnPointerWheel().connect(KlayGE::bind(&MsgInputEngine::OnPointerWheel, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3, KlayGE::placeholders::_4));
-		devices_.push_back(MakeSharedPtr<MsgInputTouch>());
-#if defined KLAYGE_PLATFORM_ANDROID
-		on_key_down_ = main_wnd->OnKeyDown().connect(KlayGE::bind(&MsgInputEngine::OnKeyDown, this,
-			KlayGE::placeholders::_2));
-		on_key_up_ = main_wnd->OnKeyUp().connect(KlayGE::bind(&MsgInputEngine::OnKeyUp, this,
-			KlayGE::placeholders::_2));
+				KFL_UNUSED(wnd);
+				this->OnKeyDown(key);
+			});
+		on_key_up_ = main_wnd->OnKeyUp().Connect(
+			[this](Window const & wnd, uint32_t key)
+			{
+				KFL_UNUSED(wnd);
+				this->OnKeyUp(key);
+			});
 		devices_.push_back(MakeSharedPtr<MsgInputKeyboard>());
-
-		on_mouse_down_ = main_wnd->OnMouseDown().connect(KlayGE::bind(&MsgInputEngine::OnMouseDown, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3));
-		on_mouse_up_ = main_wnd->OnMouseUp().connect(KlayGE::bind(&MsgInputEngine::OnMouseUp, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3));
-		on_mouse_move_ = main_wnd->OnMouseMove().connect(KlayGE::bind(&MsgInputEngine::OnMouseMove, this,
-			KlayGE::placeholders::_2));
-		on_mouse_wheel_ = main_wnd->OnMouseWheel().connect(KlayGE::bind(&MsgInputEngine::OnMouseWheel, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3));
+#if defined KLAYGE_PLATFORM_ANDROID
+		on_mouse_down_ = main_wnd->OnMouseDown().Connect(
+			[this](Window const & wnd, int2 const & pt, uint32_t buttons)
+			{
+				KFL_UNUSED(wnd);
+				this->OnMouseDown(pt, buttons);
+			});
+		on_mouse_up_ = main_wnd->OnMouseUp().Connect(
+			[this](Window const & wnd, int2 const & pt, uint32_t buttons)
+			{
+				KFL_UNUSED(wnd);
+				this->OnMouseUp(pt, buttons);
+			});
+		on_mouse_move_ = main_wnd->OnMouseMove().Connect(
+			[this](Window const & wnd, int2 const & pt)
+			{
+				KFL_UNUSED(wnd);
+				this->OnMouseMove(pt);
+			});
+		on_mouse_wheel_ = main_wnd->OnMouseWheel().Connect(
+			[this](Window const & wnd, int2 const & pt, int32_t wheel_delta)
+			{
+				KFL_UNUSED(wnd);
+				this->OnMouseWheel(pt, wheel_delta);
+			});
 		devices_.push_back(MakeSharedPtr<MsgInputMouse>());
 
-		on_joystick_axis_ = main_wnd->OnJoystickAxis().connect(KlayGE::bind(&MsgInputEngine::OnJoystickAxis, this,
-			KlayGE::placeholders::_2, KlayGE::placeholders::_3));
-		on_joystick_buttons_ = main_wnd->OnJoystickButtons().connect(KlayGE::bind(&MsgInputEngine::OnJoystickButtons, this,
-			KlayGE::placeholders::_2));
+		on_joystick_axis_ = main_wnd->OnJoystickAxis().Connect(
+			[this](Window const & wnd, uint32_t axis, int32_t value)
+			{
+				KFL_UNUSED(wnd);
+				this->OnJoystickAxis(axis, value);
+			});
+		on_joystick_buttons_ = main_wnd->OnJoystickButtons().Connect(
+			[this](Window const & wnd, uint32_t buttons)
+			{
+				KFL_UNUSED(wnd);
+				this->OnJoystickButtons(buttons);
+			});
 		devices_.push_back(MakeSharedPtr<MsgInputJoystick>());
-#elif defined KLAYGE_PLATFORM_DARWIN
-		on_key_down_ = main_wnd->OnKeyDown().connect(KlayGE::bind(&MsgInputEngine::OnKeyDown, this,
-			KlayGE::placeholders::_2));
-		on_key_up_ = main_wnd->OnKeyUp().connect(KlayGE::bind(&MsgInputEngine::OnKeyUp, this,
-			KlayGE::placeholders::_2));
-		devices_.push_back(MakeSharedPtr<MsgInputKeyboard>());
 #endif
+#elif defined KLAYGE_PLATFORM_LINUX
+		// TODO
+		KFL_UNUSED(main_wnd);
+#endif
+
+#if ((defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (_WIN32_WINNT >= _WIN32_WINNT_WINBLUE)) \
+			|| defined(KLAYGE_PLATFORM_WINDOWS_STORE) || defined(KLAYGE_PLATFORM_ANDROID) || defined(KLAYGE_PLATFORM_DARWIN)
+		on_pointer_down_ = main_wnd->OnPointerDown().Connect(
+			[this](Window const & wnd, int2 const & pt, uint32_t id)
+			{
+				KFL_UNUSED(wnd);
+				this->OnPointerDown(pt, id);
+			});
+		on_pointer_up_ = main_wnd->OnPointerUp().Connect(
+			[this](Window const & wnd, int2 const & pt, uint32_t id)
+			{
+				KFL_UNUSED(wnd);
+				this->OnPointerUp(pt, id);
+			});
+		on_pointer_update_ = main_wnd->OnPointerUpdate().Connect(
+			[this](Window const & wnd, int2 const & pt, uint32_t id, bool down)
+			{
+				KFL_UNUSED(wnd);
+				this->OnPointerUpdate(pt, id, down);
+			});
+		on_pointer_wheel_ = main_wnd->OnPointerWheel().Connect(
+			[this](Window const & wnd, int2 const & pt, uint32_t id, int32_t wheel_delta)
+			{
+				KFL_UNUSED(wnd);
+				this->OnPointerWheel(pt, id, wheel_delta);
+			});
+		devices_.push_back(MakeSharedPtr<MsgInputTouch>());
 #endif
 
 #if (defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (defined KLAYGE_HAVE_LIBOVR)
@@ -262,124 +294,72 @@ namespace KlayGE
 		devices_.push_back(MakeSharedPtr<MsgInputOVR>());
 #endif
 
-#if ((defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)) \
-			|| (defined KLAYGE_PLATFORM_WINDOWS_RUNTIME) || (defined KLAYGE_PLATFORM_ANDROID)
+#if defined(KLAYGE_PLATFORM_WINDOWS) || defined(KLAYGE_PLATFORM_ANDROID)
 		devices_.push_back(MakeSharedPtr<MsgInputSensor>());
+#endif
+
+#if defined(KLAYGE_PLATFORM_WINDOWS)
+		for (uint32_t i = 0; i < XUSER_MAX_COUNT; ++i)
+		{
+			XINPUT_STATE state{};
+			if (XInputGetState(i, &state) == ERROR_SUCCESS)
+			{
+				devices_.push_back(MakeSharedPtr<MsgInputXInput>(i));
+			}
+		}
 #endif
 	}
 
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
-	void MsgInputEngine::OnRawInput(Window const & /*wnd*/, HRAWINPUT ri)
+	void MsgInputEngine::OnRawInput(Window const & wnd, HRAWINPUT ri)
 	{
-		UINT size = 0;
-		if (0 == ::GetRawInputData(ri, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)))
+		if (wnd.HWnd() == ::GetForegroundWindow())
 		{
-			std::vector<uint8_t> data(size);
-			::GetRawInputData(ri, RID_INPUT, &data[0], &size, sizeof(RAWINPUTHEADER));
-
-			RAWINPUT* raw = reinterpret_cast<RAWINPUT*>(&data[0]);
-
-			typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-			KLAYGE_FOREACH(DevicesType::reference device, devices_)
+			UINT size = 0;
+			if (0 == ::GetRawInputData(ri, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)))
 			{
-				switch (raw->header.dwType)
+				auto data = MakeUniquePtr<uint8_t[]>(size);
+				::GetRawInputData(ri, RID_INPUT, data.get(), &size, sizeof(RAWINPUTHEADER));
+
+				RAWINPUT* raw = reinterpret_cast<RAWINPUT*>(data.get());
+
+				for (auto const & device : devices_)
 				{
-				case RIM_TYPEKEYBOARD:
-					if (IDT_Keyboard == device->Type())
+					switch (raw->header.dwType)
 					{
-						checked_pointer_cast<MsgInputKeyboard>(device)->OnRawInput(*raw);
-					}
-					break;
+					case RIM_TYPEKEYBOARD:
+						if (IDT_Keyboard == device->Type())
+						{
+							checked_pointer_cast<MsgInputKeyboard>(device)->OnRawInput(*raw);
+						}
+						break;
 
-				case RIM_TYPEMOUSE:
-					if (IDT_Mouse == device->Type())
-					{
-						checked_pointer_cast<MsgInputMouse>(device)->OnRawInput(*raw);
-					}
-					break;
+					case RIM_TYPEMOUSE:
+						if (IDT_Mouse == device->Type())
+						{
+							checked_pointer_cast<MsgInputMouse>(device)->OnRawInput(*raw);
+						}
+						break;
 
-				case RIM_TYPEHID:
-					if (IDT_Joystick == device->Type())
-					{
-						checked_pointer_cast<MsgInputJoystick>(device)->OnRawInput(*raw);
-					}
-					break;
+					case RIM_TYPEHID:
+						if (IDT_Joystick == device->Type())
+						{
+							checked_pointer_cast<MsgInputJoystick>(device)->OnRawInput(*raw);
+						}
+						break;
 
-				default:
-					break;
+					default:
+						break;
+					}
 				}
 			}
 		}
 	}
 
-#if (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)
-	void MsgInputEngine::OnTouch(Window const & wnd, HTOUCHINPUT hti, uint32_t num_inputs)
-	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
-		{
-			if (InputEngine::IDT_Touch == device->Type())
-			{
-				checked_pointer_cast<MsgInputTouch>(device)->OnTouch(wnd, hti, num_inputs);
-			}
-		}
-	}
-#endif
-#endif
-
-	void MsgInputEngine::OnPointerDown(int2 const & pt, uint32_t id)
-	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
-		{
-			if (InputEngine::IDT_Touch == device->Type())
-			{
-				checked_pointer_cast<MsgInputTouch>(device)->OnPointerDown(pt, id);
-			}
-		}
-	}
-
-	void MsgInputEngine::OnPointerUp(int2 const & pt, uint32_t id)
-	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
-		{
-			if (InputEngine::IDT_Touch == device->Type())
-			{
-				checked_pointer_cast<MsgInputTouch>(device)->OnPointerUp(pt, id);
-			}
-		}
-	}
-	
-	void MsgInputEngine::OnPointerUpdate(int2 const & pt, uint32_t id, bool down)
-	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
-		{
-			if (InputEngine::IDT_Touch == device->Type())
-			{
-				checked_pointer_cast<MsgInputTouch>(device)->OnPointerUpdate(pt, id, down);
-			}
-		}
-	}
-	
-	void MsgInputEngine::OnPointerWheel(int2 const & pt, uint32_t id, int32_t wheel_delta)
-	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
-		{
-			if (InputEngine::IDT_Touch == device->Type())
-			{
-				checked_pointer_cast<MsgInputTouch>(device)->OnPointerWheel(pt, id, wheel_delta);
-			}
-		}
-	}
-
-#if defined KLAYGE_PLATFORM_ANDROID
+#elif defined(KLAYGE_PLATFORM_WINDOWS_STORE) || defined(KLAYGE_PLATFORM_ANDROID) || defined(KLAYGE_PLATFORM_DARWIN)
 	void MsgInputEngine::OnKeyDown(uint32_t key)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Keyboard == device->Type())
 			{
@@ -390,8 +370,7 @@ namespace KlayGE
 
 	void MsgInputEngine::OnKeyUp(uint32_t key)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Keyboard == device->Type())
 			{
@@ -400,10 +379,10 @@ namespace KlayGE
 		}
 	}
 
+#if defined KLAYGE_PLATFORM_ANDROID
 	void MsgInputEngine::OnMouseDown(int2 const & pt, uint32_t buttons)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Mouse == device->Type())
 			{
@@ -414,8 +393,7 @@ namespace KlayGE
 
 	void MsgInputEngine::OnMouseUp(int2 const & pt, uint32_t buttons)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Mouse == device->Type())
 			{
@@ -426,8 +404,7 @@ namespace KlayGE
 
 	void MsgInputEngine::OnMouseMove(int2 const & pt)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Mouse == device->Type())
 			{
@@ -438,8 +415,7 @@ namespace KlayGE
 
 	void MsgInputEngine::OnMouseWheel(int2 const & pt, int32_t wheel_delta)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Mouse == device->Type())
 			{
@@ -450,8 +426,7 @@ namespace KlayGE
 
 	void MsgInputEngine::OnJoystickAxis(uint32_t axis, int32_t value)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Joystick == device->Type())
 			{
@@ -462,8 +437,7 @@ namespace KlayGE
 
 	void MsgInputEngine::OnJoystickButtons(uint32_t buttons)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
 			if (InputEngine::IDT_Joystick == device->Type())
 			{
@@ -471,31 +445,52 @@ namespace KlayGE
 			}
 		}
 	}
-#elif defined KLAYGE_PLATFORM_DARWIN
-	void MsgInputEngine::OnKeyDown(uint32_t key)
+#endif
+#endif
+
+	void MsgInputEngine::OnPointerDown(int2 const & pt, uint32_t id)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
-			if (InputEngine::IDT_Keyboard == device->Type())
+			if (InputEngine::IDT_Touch == device->Type())
 			{
-				checked_pointer_cast<MsgInputKeyboard>(device)->OnKeyDown(key);
+				checked_pointer_cast<MsgInputTouch>(device)->OnPointerDown(pt, id);
 			}
 		}
 	}
 
-	void MsgInputEngine::OnKeyUp(uint32_t key)
+	void MsgInputEngine::OnPointerUp(int2 const & pt, uint32_t id)
 	{
-		typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-		KLAYGE_FOREACH(DevicesType::reference device, devices_)
+		for (auto const & device : devices_)
 		{
-			if (InputEngine::IDT_Keyboard == device->Type())
+			if (InputEngine::IDT_Touch == device->Type())
 			{
-				checked_pointer_cast<MsgInputKeyboard>(device)->OnKeyUp(key);
+				checked_pointer_cast<MsgInputTouch>(device)->OnPointerUp(pt, id);
 			}
 		}
 	}
-#endif
+
+	void MsgInputEngine::OnPointerUpdate(int2 const & pt, uint32_t id, bool down)
+	{
+		for (auto const & device : devices_)
+		{
+			if (InputEngine::IDT_Touch == device->Type())
+			{
+				checked_pointer_cast<MsgInputTouch>(device)->OnPointerUpdate(pt, id, down);
+			}
+		}
+	}
+
+	void MsgInputEngine::OnPointerWheel(int2 const & pt, uint32_t id, int32_t wheel_delta)
+	{
+		for (auto const & device : devices_)
+		{
+			if (InputEngine::IDT_Touch == device->Type())
+			{
+				checked_pointer_cast<MsgInputTouch>(device)->OnPointerWheel(pt, id, wheel_delta);
+			}
+		}
+	}
 
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
 	NTSTATUS MsgInputEngine::HidP_GetCaps(PHIDP_PREPARSED_DATA PreparsedData, PHIDP_CAPS Capabilities) const
@@ -530,22 +525,5 @@ namespace KlayGE
 		return DynamicHidP_GetUsageValue_(ReportType, UsagePage, LinkCollection, Usage, UsageValue, PreparsedData,
 			Report, ReportLength);
 	}
-
-#if (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)
-	BOOL MsgInputEngine::RegisterTouchWindow(HWND hWnd, ULONG ulFlags) const
-	{
-		return DynamicRegisterTouchWindow_(hWnd, ulFlags);
-	}
-
-	BOOL MsgInputEngine::GetTouchInputInfo(HTOUCHINPUT hTouchInput, UINT cInputs, PTOUCHINPUT pInputs, int cbSize) const
-	{
-		return DynamicGetTouchInputInfo_(hTouchInput, cInputs, pInputs, cbSize);
-	}
-
-	BOOL MsgInputEngine::CloseTouchInputHandle(HTOUCHINPUT hTouchInput) const
-	{
-		return DynamicCloseTouchInputHandle_(hTouchInput);
-	}
-#endif
 #endif
 }

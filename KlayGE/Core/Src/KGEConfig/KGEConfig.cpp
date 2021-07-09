@@ -11,6 +11,8 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
+
+#include <KFL/CXX2a/format.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/ResLoader.hpp>
 #include <KFL/Util.hpp>
@@ -19,7 +21,10 @@
 #include <tchar.h>
 #include <stdlib.h>
 #include <commctrl.h>
+#include <iterator>
 #include <sstream>
+#include <string>
+
 #include "resource.h"
 
 using namespace KlayGE;
@@ -72,6 +77,22 @@ DLGPROC tab_dlg_procs[] =
 	Show_Tab_DlgProc
 };
 
+uint32_t constexpr paper_white_candidates[] =
+{
+	80,
+	100,
+	200,
+	400
+};
+
+uint32_t constexpr max_lum_candidates[] =
+{
+	80,
+	100,
+	400,
+	1000
+};
+
 INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, LPARAM /*lParam*/)
 {
 	switch(uMsg)
@@ -79,13 +100,19 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 	case WM_INITDIALOG:
 		{
 			HWND hFactoryCombo = GetDlgItem(hDlg, IDC_FACTORY_COMBO);
-			HMODULE mod_d3d11 = LoadLibraryEx(TEXT("D3D11.dll"), nullptr, 0);
+			HMODULE mod_d3d11 = LoadLibraryEx(TEXT("d3d11.dll"), nullptr, 0);
 			if (mod_d3d11)
 			{
 				SendMessage(hFactoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("D3D11")));
 				FreeLibrary(mod_d3d11);
 			}
-			HMODULE mod_gl = LoadLibraryEx(TEXT("OpenGL32.dll"), nullptr, 0);
+			HMODULE mod_d3d12 = LoadLibraryEx(TEXT("d3d12.dll"), nullptr, 0);
+			if (mod_d3d12)
+			{
+				SendMessage(hFactoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("D3D12")));
+				FreeLibrary(mod_d3d12);
+			}
+			HMODULE mod_gl = LoadLibraryEx(TEXT("opengl32.dll"), nullptr, 0);
 			if (mod_gl)
 			{
 				SendMessage(hFactoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("OpenGL")));
@@ -124,10 +151,18 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 		}
 		{
 			HWND hResCombo = GetDlgItem(hDlg, IDC_RES_COMBO);
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("4096x2304 (16:9)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("3200x2000 (16:10)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("3000x2000 (3:2)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("2560x1600 (16:10)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("2160x1440 (3:2)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1920x1280 (3:2)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1920x1200 (16:10)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1920x1080 (16:9)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1680x1050 (16:10)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1600x900 (16:9)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1440x900 (16:10)")));
+			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1366x768 (16:9)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1280x1024 (5:4)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1280x960 (4:3)")));
 			SendMessage(hResCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("1280x800 (16:10)")));
@@ -142,12 +177,11 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 			{
 				SendMessage(hResCombo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(buf));
 
-				std::ostringstream oss;
-				oss << cfg.graphics_cfg.width << "x" << cfg.graphics_cfg.height << ' ';
+				std::string const res = std::format("{}x{} ", cfg.graphics_cfg.width, cfg.graphics_cfg.height);
 
 				std::string str;
 				Convert(str, buf);
-				if (0 == str.find(oss.str()))
+				if (0 == str.find(res))
 				{
 					sel = i;
 				}
@@ -159,6 +193,7 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 			SendMessage(hClrFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("ARGB8")));
 			SendMessage(hClrFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("ABGR8")));
 			SendMessage(hClrFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("A2BGR10")));
+			SendMessage(hClrFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("ABGR16F")));
 
 			int sel = 0;
 			switch (cfg.graphics_cfg.color_fmt)
@@ -183,23 +218,24 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 		}
 		{
 			HWND hDepthFmtCombo = GetDlgItem(hDlg, IDC_DEPTH_FMT_COMBO);
+			SendMessage(hDepthFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("None")));
 			SendMessage(hDepthFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("D16")));
 			SendMessage(hDepthFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("D24S8")));
 			SendMessage(hDepthFmtCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("D32F")));
 
-			int sel = 0;
+			int sel = 2;
 			switch (cfg.graphics_cfg.depth_stencil_fmt)
 			{
 			case EF_D16:
-				sel = 0;
-				break;
-
-			case EF_D24S8:
 				sel = 1;
 				break;
 
-			case EF_D32F:
+			case EF_D24S8:
 				sel = 2;
+				break;
+
+			case EF_D32F:
+				sel = 3;
 				break;
 
 			default:
@@ -279,16 +315,6 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 			SendMessage(hSyncCombo, CB_SETCURSEL, sel, 0);
 		}
 		{
-			HWND hMBFramesEdit = GetDlgItem(hDlg, IDC_MB_FRAMES_EDIT);
-
-			std::ostringstream oss;
-			oss << cfg.graphics_cfg.motion_frames;
-			std::basic_string<TCHAR> str;
-			Convert(str, oss.str());
-
-			SetWindowText(hMBFramesEdit, str.c_str());
-		}
-		{
 			HWND hHDRCombo = GetDlgItem(hDlg, IDC_HDR_COMBO);
 			SendMessage(hHDRCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("Yes")));
 			SendMessage(hHDRCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("No")));
@@ -324,6 +350,57 @@ INT_PTR CALLBACK Graphics_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, L
 
 			SetWindowText(hStereoSepEdit, str.c_str());
 		}
+		{
+			HWND hOutputCombo = GetDlgItem(hDlg, IDC_OUTPUT_COMBO);
+			SendMessage(hOutputCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("sRGB")));
+			SendMessage(hOutputCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("HDR10")));
+
+			int sel = 0;
+			switch (cfg.graphics_cfg.display_output_method)
+			{
+			case DOM_HDR10:
+				sel = 1;
+				break;
+
+			case DOM_sRGB:
+			default:
+				sel = 0;
+				break;
+			}
+			SendMessage(hOutputCombo, CB_SETCURSEL, sel, 0);
+		}
+		{
+			int sel = -1;
+			HWND hPaperWhiteCombo = GetDlgItem(hDlg, IDC_PAPER_WHITE_COMBO);
+			for (uint32_t i = 0; i < std::size(paper_white_candidates); ++ i)
+			{
+				std::basic_string<TCHAR> str;
+				Convert(str, std::to_string(paper_white_candidates[i]));
+				SendMessage(hPaperWhiteCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(str.c_str()));
+
+				if ((sel == -1) && (cfg.graphics_cfg.paper_white <= paper_white_candidates[i]))
+				{
+					sel = static_cast<int>(i);
+				}
+			}
+			SendMessage(hPaperWhiteCombo, CB_SETCURSEL, sel, 0);
+		}
+		{
+			int sel = -1;
+			HWND hMaxLumCombo = GetDlgItem(hDlg, IDC_MAX_LUM_COMBO);
+			for (uint32_t i = 0; i < std::size(max_lum_candidates); ++ i)
+			{
+				std::basic_string<TCHAR> str;
+				Convert(str, std::to_string(max_lum_candidates[i]));
+				SendMessage(hMaxLumCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(str.c_str()));
+
+				if ((sel == -1) && (cfg.graphics_cfg.display_max_luminance <= max_lum_candidates[i]))
+				{
+					sel = static_cast<int>(i);
+				}
+			}
+			SendMessage(hMaxLumCombo, CB_SETCURSEL, sel, 0);
+		}
 		return TRUE;
 
 	default:
@@ -344,11 +421,11 @@ INT_PTR CALLBACK Audio_Tab_DlgProc(HWND hDlg, UINT uMsg, WPARAM /*wParam*/, LPAR
 				SendMessage(hFactoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("OpenAL")));
 				FreeLibrary(mod_al);
 			}
-			HMODULE mod_ds = LoadLibraryEx(TEXT("dsound.dll"), nullptr, 0);
-			if (mod_ds)
+			HMODULE mod_xaudio = LoadLibraryEx(TEXT("XAudio2_8.dll"), nullptr, 0);
+			if (mod_xaudio)
 			{
-				SendMessage(hFactoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("DSound")));
-				FreeLibrary(mod_ds);
+				SendMessage(hFactoryCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TEXT("XAudio")));
+				FreeLibrary(mod_xaudio);
 			}
 
 			TCHAR buf[256];
@@ -470,14 +547,16 @@ INT_PTR CreateTabDialogs(HWND hWnd, HINSTANCE hInstance)
 
 	RECT rc;
 	GetClientRect(hTab, &rc);
-	TabCtrl_AdjustRect(hTab, false, &rc);
+	int ret = TabCtrl_AdjustRect(hTab, false, &rc);
+	KFL_UNUSED(ret);
 	rc.top += 20;
 
 	for (int i = 0; i < NTABS; ++ i)
 	{
 		tci.pszText    = const_cast<TCHAR*>(tab_dlg_titles[i].c_str());
 		tci.cchTextMax = static_cast<int>(tab_dlg_titles[i].size());
-		TabCtrl_InsertItem(hTab, i, &tci);
+		ret = TabCtrl_InsertItem(hTab, i, &tci);
+		KFL_UNUSED(ret);
 
 		hTabDlg[i] = CreateDialogParam(hInstance, tab_dlg_ids[i].c_str(), hTab, tab_dlg_procs[i], 0);
 		MoveWindow(hTabDlg[i], rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, FALSE);
@@ -550,8 +629,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 					std::string str;
 					Convert(str, buf);
 					std::string::size_type p = str.find('x');
-					std::istringstream(str.substr(0, p)) >> cfg.graphics_cfg.width;
-					std::istringstream(str.substr(p + 1, str.size())) >> cfg.graphics_cfg.height;
+					cfg.graphics_cfg.width = std::stoi(str.substr(0, p));
+					cfg.graphics_cfg.height = std::stoi(str.substr(p + 1, str.size()));
 				}
 				{
 					HWND hClrFmtCombo = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_CLR_FMT_COMBO);
@@ -580,20 +659,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 					int n = static_cast<int>(SendMessage(hDepthFmtCombo, CB_GETCURSEL, 0, 0));
 					switch (n)
 					{
-					case 0:
+					case 1:
 						cfg.graphics_cfg.depth_stencil_fmt = EF_D16;
 						break;
 
-					case 1:
+					case 2:
 						cfg.graphics_cfg.depth_stencil_fmt = EF_D24S8;
 						break;
 
-					case 2:
+					case 3:
 						cfg.graphics_cfg.depth_stencil_fmt = EF_D32F;
 						break;
 
 					default:
-						cfg.graphics_cfg.depth_stencil_fmt = EF_D16;
+						cfg.graphics_cfg.depth_stencil_fmt = EF_Unknown;
 						break;
 					}
 				}
@@ -660,12 +739,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 					}
 				}
 				{
-					HWND hMBFramesEdit = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_MB_FRAMES_EDIT);
-					TCHAR buf[256];
-					GetWindowText(hMBFramesEdit, buf, sizeof(buf) / sizeof(buf[0]));
-					std::basic_stringstream<TCHAR>(buf) >> cfg.graphics_cfg.motion_frames;
-				}
-				{
 					HWND hHDRCombo = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_HDR_COMBO);
 					int n = static_cast<int>(SendMessage(hHDRCombo, CB_GETCURSEL, 0, 0));
 					cfg.graphics_cfg.hdr = (0 == n) ? 1 : 0;
@@ -678,8 +751,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 				{
 					HWND hStereoSepEdit = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_STEREO_SEP_EDIT);
 					TCHAR buf[256];
-					GetWindowText(hStereoSepEdit, buf, sizeof(buf) / sizeof(buf[0]));
-					std::basic_stringstream<TCHAR>(buf) >> cfg.graphics_cfg.stereo_separation;
+					GetWindowText(hStereoSepEdit, buf, static_cast<int>(std::size(buf)));
+					cfg.graphics_cfg.stereo_separation = std::stof(buf);
+				}
+				{
+					HWND hOutputCombo = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_OUTPUT_COMBO);
+					int n = static_cast<int>(SendMessage(hOutputCombo, CB_GETCURSEL, 0, 0));
+					cfg.graphics_cfg.display_output_method = static_cast<DisplayOutputMethod>(n);
+				}
+				{
+					HWND hPaperWhiteCombo = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_PAPER_WHITE_COMBO);
+					int n = static_cast<int>(SendMessage(hPaperWhiteCombo, CB_GETCURSEL, 0, 0));
+					cfg.graphics_cfg.paper_white = paper_white_candidates[n];
+				}
+				{
+					HWND hMaxLumCombo = GetDlgItem(hTabDlg[GRAPHICS_TAB], IDC_MAX_LUM_COMBO);
+					int n = static_cast<int>(SendMessage(hMaxLumCombo, CB_GETCURSEL, 0, 0));
+					cfg.graphics_cfg.display_max_luminance = max_lum_candidates[n];
 				}
 			}
 			{
@@ -760,7 +848,7 @@ bool UIConfiguration(HINSTANCE hInstance)
 	int cx = ::GetSystemMetrics(SM_CXSCREEN);
 	int cy = ::GetSystemMetrics(SM_CYSCREEN);
 	int width = 420;
-	int height = 500;
+	int height = 600;
 
 	HWND hWnd = ::CreateWindow(wc.lpszClassName, TEXT("KlayGE Configuration Tool"),
 		WS_CAPTION | WS_SYSMENU, (cx - width) / 2, (cy - height) / 2,
@@ -772,8 +860,7 @@ bool UIConfiguration(HINSTANCE hInstance)
 	CreateTabDialogs(hWnd, hInstance);
 	CreateButtons(hWnd, hInstance);
 
-	MSG msg;
-	memset(&msg, 0, sizeof(msg));
+	MSG msg = {};
 	while (::GetMessage(&msg, nullptr, 0, 0))
 	{
 		::TranslateMessage(&msg);
@@ -783,8 +870,8 @@ bool UIConfiguration(HINSTANCE hInstance)
 	return save_cfg;
 }
 
-#if defined(KLAYGE_COMPILER_MSVC) && (KLAYGE_COMPILER_VERSION >= 100)
-int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_ HINSTANCE /*hPrevInstance*/, _In_ LPSTR /*lpszCmdLine*/, _In_ int /*nCmdShow*/)
+#if defined(KLAYGE_COMPILER_MSVC)
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance*/, _In_ LPSTR /*lpszCmdLine*/, _In_ int /*nCmdShow*/)
 #else
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpszCmdLine*/, int /*nCmdShow*/)
 #endif

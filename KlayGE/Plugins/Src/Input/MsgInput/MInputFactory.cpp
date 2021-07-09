@@ -33,9 +33,37 @@
 #include <KlayGE/InputFactory.hpp>
 
 #include <KlayGE/MsgInput/MInput.hpp>
-#include <KlayGE/MsgInput/MInputFactory.hpp>
 
-void MakeInputFactory(KlayGE::InputFactoryPtr& ptr)
+namespace KlayGE
 {
-	ptr = KlayGE::MakeSharedPtr<KlayGE::ConcreteInputFactory<KlayGE::MsgInputEngine> >(L"MsgInput Input Factory");
+	class MInputFactory : public InputFactory
+	{
+	public:
+		std::wstring const & Name() const override
+		{
+			static std::wstring const name(L"MsgInput Input Factory");
+			return name;
+		}
+
+	private:
+		std::unique_ptr<InputEngine> DoMakeInputEngine() override
+		{
+			return MakeUniquePtr<MsgInputEngine>();
+		}
+
+		void DoSuspend() override
+		{
+		}
+		void DoResume() override
+		{
+		}
+	};
+}
+
+extern "C"
+{
+	KLAYGE_SYMBOL_EXPORT void MakeInputFactory(std::unique_ptr<KlayGE::InputFactory>& ptr)
+	{
+		ptr = KlayGE::MakeUniquePtr<KlayGE::MInputFactory>();
+	}
 }

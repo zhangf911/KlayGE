@@ -25,14 +25,10 @@
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API Query
+	class KLAYGE_CORE_API Query : boost::noncopyable
 	{
 	public:
-		virtual ~Query()
-		{
-		}
-
-		static QueryPtr NullObject();
+		virtual ~Query() noexcept;
 
 		virtual void Begin() = 0;
 		virtual void End() = 0;
@@ -41,20 +37,12 @@ namespace KlayGE
 	class KLAYGE_CORE_API OcclusionQuery : public Query
 	{
 	public:
-		virtual ~OcclusionQuery()
-		{
-		}
-
 		virtual uint64_t SamplesPassed() = 0;
 	};
 
 	class KLAYGE_CORE_API ConditionalRender : public Query
 	{
 	public:
-		virtual ~ConditionalRender()
-		{
-		}
-
 		virtual void BeginConditionalRender() = 0;
 		virtual void EndConditionalRender() = 0;
 
@@ -64,11 +52,14 @@ namespace KlayGE
 	class KLAYGE_CORE_API TimerQuery : public Query
 	{
 	public:
-		virtual ~TimerQuery()
-		{
-		}
-
 		virtual double TimeElapsed() = 0; // In second.
+	};
+
+	class KLAYGE_CORE_API SOStatisticsQuery : public Query
+	{
+	public:
+		virtual uint64_t NumPrimitivesWritten() = 0;
+		virtual uint64_t PrimitivesGenerated() = 0;
 	};
 }
 

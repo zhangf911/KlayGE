@@ -17,26 +17,39 @@
 
 #include <vector>
 
-#include <KlayGE/D3D11/D3D11MinGWDefs.hpp>
-#include <D3D11Shader.h>
-
 #include <KlayGE/RenderLayout.hpp>
 #include <KlayGE/D3D11/D3D11Typedefs.hpp>
 
 namespace KlayGE
 {
-	class D3D11RenderLayout : public RenderLayout
+	class D3D11RenderLayout final : public RenderLayout
 	{
 	public:
 		D3D11RenderLayout();
 
-		ID3D11InputLayoutPtr const & InputLayout(size_t signature, std::vector<uint8_t> const & vs_code) const;
+		void Active() const;
+		ID3D11InputLayout* InputLayout(ShaderObject const * so) const;
+
+		std::vector<ID3D11Buffer*> const & VBs() const
+		{
+			return vbs_;
+		}
+		std::vector<UINT> const & Strides() const
+		{
+			return strides_;
+		}
+		std::vector<UINT> const & Offsets() const
+		{
+			return offsets_;
+		}
 
 	private:
-		typedef std::vector<D3D11_INPUT_ELEMENT_DESC> input_elems_type;
-		input_elems_type vertex_elems_;
+		mutable std::vector<D3D11_INPUT_ELEMENT_DESC> vertex_elems_;
+		mutable std::vector<std::pair<uint32_t, ID3D11InputLayoutPtr>> input_layouts_;
 
-		mutable std::vector<std::pair<size_t, ID3D11InputLayoutPtr> > input_layouts_;
+		mutable std::vector<ID3D11Buffer*> vbs_;
+		mutable std::vector<UINT> strides_;
+		mutable std::vector<UINT> offsets_;
 	};
 }
 

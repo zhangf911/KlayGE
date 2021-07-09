@@ -47,115 +47,110 @@ namespace KlayGE
 		uint16_t clr_0, clr_1;
 		uint16_t bitmap[2];
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(BC1Block) == 8);
 
 	struct BC2Block
 	{
 		uint16_t alpha[4];
 		BC1Block bc1;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(BC2Block) == 16);
 
 	struct BC4Block
 	{
 		uint8_t alpha_0, alpha_1;
 		uint8_t bitmap[6];
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(BC4Block) == 8);
 
 	struct BC3Block
 	{
 		BC4Block alpha;
 		BC1Block bc1;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(BC3Block) == 16);
 
 	struct BC5Block
 	{
 		BC4Block red;
 		BC4Block green;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(BC5Block) == 16);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 #pragma pack(pop)
 #endif
 
-	class KLAYGE_CORE_API TexCompressionBC1 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC1 final : public TexCompression
 	{
 	public:
 		TexCompressionBC1();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 		void EncodeBC1Internal(BC1Block& bc1, ARGBColor32 const * argb, bool alpha, TexCompressionMethod method) const;
 
 	private:
-		void PrepareOptTable(uint8_t* table, uint8_t const * expand, int size) const;
 		ARGBColor32 RGB565To888(uint16_t rgb) const;
 		uint16_t RGB888To565(ARGBColor32 const & rgb) const;
 		uint32_t MatchColorsBlock(ARGBColor32 const * argb, ARGBColor32 const & min_clr, ARGBColor32 const & max_clr, bool alpha) const;
 		void OptimizeColorsBlock(ARGBColor32 const * argb, ARGBColor32& min_clr, ARGBColor32& max_clr, TexCompressionMethod method) const;
 		bool RefineBlock(ARGBColor32 const * argb, ARGBColor32& min_clr, ARGBColor32& max_clr, uint32_t mask) const;
-
-	private:
-		static uint8_t expand5_[32];
-		static uint8_t expand6_[64];
-		static uint8_t o_match5_[256][2];
-		static uint8_t o_match6_[256][2];
-		static uint8_t quant_rb_tab_[256 + 16];
-		static uint8_t quant_g_tab_[256 + 16];
-		static bool lut_inited_;
 	};
 
-	class KLAYGE_CORE_API TexCompressionBC2 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC2 final : public TexCompression
 	{
 	public:
 		TexCompressionBC2();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 	private:
-		TexCompressionBC1Ptr bc1_codec_;
+		TexCompressionBC1 bc1_codec_;
 	};
 
-	class KLAYGE_CORE_API TexCompressionBC3 : public TexCompression
-	{
-	public:
-		TexCompressionBC3();
-
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
-
-	private:
-		TexCompressionBC1Ptr bc1_codec_;
-		TexCompressionBC4Ptr bc4_codec_;
-	};
-
-	class KLAYGE_CORE_API TexCompressionBC4 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC4 final : public TexCompression
 	{
 	public:
 		TexCompressionBC4();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 	};
 
-	class KLAYGE_CORE_API TexCompressionBC5 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC3 final : public TexCompression
+	{
+	public:
+		TexCompressionBC3();
+
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
+
+	private:
+		TexCompressionBC1 bc1_codec_;
+		TexCompressionBC4 bc4_codec_;
+	};
+
+	class KLAYGE_CORE_API TexCompressionBC5 final : public TexCompression
 	{
 	public:
 		TexCompressionBC5();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 	private:
-		TexCompressionBC4Ptr bc4_codec_;
+		TexCompressionBC4 bc4_codec_;
 	};
 
-	class KLAYGE_CORE_API TexCompressionBC6U : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC6U final : public TexCompression
 	{
 	public:
 		TexCompressionBC6U();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 		void DecodeBC6Internal(void* output, void const * input, bool signed_fmt);
 
@@ -171,7 +166,7 @@ namespace KlayGE
 		static uint32_t const BC6_WEIGHT_SHIFT = 6;
 		static int32_t const BC6_WEIGHT_ROUND = 32;
 
-		enum ModeField
+		enum ModeField : uint8_t
 		{
 			NA, // N/A
 			M,  // Mode
@@ -210,19 +205,19 @@ namespace KlayGE
 		static int const mode_to_info_[];
 	};
 
-	class KLAYGE_CORE_API TexCompressionBC6S : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC6S final : public TexCompression
 	{
 	public:
 		TexCompressionBC6S();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 	private:
-		TexCompressionBC6UPtr bc6u_codec_;
+		TexCompressionBC6U bc6u_codec_;
 	};
 
-	class KLAYGE_CORE_API TexCompressionBC7 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionBC7 final : public TexCompression
 	{
 		static uint32_t const BC7_MAX_REGIONS = 3;
 		static uint32_t const BC7_NUM_CHANNELS = 4;
@@ -269,6 +264,8 @@ namespace KlayGE
 			explicit CompressParams(uint32_t shape)
 				: rotation_mode(-1), index_mode(-1), shape_index(shape)
 			{
+				std::fill(std::begin(p1), std::end(p1), float4(0, 0, 0, 0));
+				std::fill(std::begin(p2), std::end(p2), float4(0, 0, 0, 0));
 				memset(indices, 0xFF, sizeof(indices));
 				memset(alpha_indices, 0xFF, sizeof(alpha_indices));
 				memset(pbit_combo, 0xFF, sizeof(pbit_combo));
@@ -278,12 +275,10 @@ namespace KlayGE
 	public:
 		TexCompressionBC7();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 	private:
-		void PrepareOptTable(uint8_t* table, uint8_t const * expand, int size) const;
-		void PrepareOptTable2(uint8_t* table, uint8_t const * expand, int size) const;
 		void PackBC7UniformBlock(void* output, ARGBColor32 const & pixel);
 		void PackBC7Block(int mode, CompressParams& params, void* output);
 		int RotationMode(ModeInfo const & mode_info) const;
@@ -322,12 +317,6 @@ namespace KlayGE
 		int index_mode_;
 
 		static ModeInfo const mode_info_[];
-
-		static uint8_t expand6_[64];
-		static uint8_t expand7_[128];
-		static uint8_t o_match6_[256][2];
-		static uint8_t o_match7_[256][2];
-		static bool lut_inited_;
 	};
 
 	KLAYGE_CORE_API void BC4ToBC1G(BC1Block& bc1, BC4Block const & bc4);

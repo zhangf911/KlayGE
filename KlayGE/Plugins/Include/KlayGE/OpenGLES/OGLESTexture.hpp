@@ -27,28 +27,27 @@ namespace KlayGE
 	{
 	public:
 		OGLESTexture(TextureType type, uint32_t array_size, uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint);
-		virtual ~OGLESTexture();
+		~OGLESTexture() override;
 
-		std::wstring const & Name() const;
+		std::wstring const & Name() const override;
 
-		uint32_t Width(uint32_t level) const;
-		uint32_t Height(uint32_t level) const;
-		uint32_t Depth(uint32_t level) const;
+		uint32_t Width(uint32_t level) const override;
+		uint32_t Height(uint32_t level) const override;
+		uint32_t Depth(uint32_t level) const override;
 
-		virtual void CopyToSubTexture1D(Texture& target,
-			uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_width,
-			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_width);
-		virtual void CopyToSubTexture2D(Texture& target,
-			uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height,
-			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height);
-		virtual void CopyToSubTexture3D(Texture& target,
-			uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_z_offset, uint32_t dst_width, uint32_t dst_height, uint32_t dst_depth,
-			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_z_offset, uint32_t src_width, uint32_t src_height, uint32_t src_depth);
-		virtual void CopyToSubTextureCube(Texture& target,
-			uint32_t dst_array_index, CubeFaces dst_face, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height,
-			uint32_t src_array_index, CubeFaces src_face, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height);
-
-		void BuildMipSubLevels();
+		void CopyToSubTexture1D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_width,
+			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_width, TextureFilter filter) override;
+		void CopyToSubTexture2D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset,
+			uint32_t dst_width, uint32_t dst_height, uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset,
+			uint32_t src_y_offset, uint32_t src_width, uint32_t src_height, TextureFilter filter) override;
+		void CopyToSubTexture3D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset,
+			uint32_t dst_z_offset, uint32_t dst_width, uint32_t dst_height, uint32_t dst_depth, uint32_t src_array_index,
+			uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_z_offset, uint32_t src_width,
+			uint32_t src_height, uint32_t src_depth, TextureFilter filter) override;
+		void CopyToSubTextureCube(Texture& target, uint32_t dst_array_index, CubeFaces dst_face, uint32_t dst_level, uint32_t dst_x_offset,
+			uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height, uint32_t src_array_index, CubeFaces src_face,
+			uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height,
+			TextureFilter filter) override;
 
 		GLuint GLTexture() const
 		{
@@ -62,27 +61,45 @@ namespace KlayGE
 		void TexParameteri(GLenum pname, GLint param);
 		void TexParameterf(GLenum pname, GLfloat param);
 
-		virtual void OfferHWResource() KLAYGE_OVERRIDE;
+		void DeleteHWResource() override;
+		bool HWResourceReady() const override;
+
+		void UpdateSubresource1D(uint32_t array_index, uint32_t level,
+			uint32_t x_offset, uint32_t width,
+			void const * data) override;
+		void UpdateSubresource2D(uint32_t array_index, uint32_t level,
+			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
+			void const * data, uint32_t row_pitch) override;
+		void UpdateSubresource3D(uint32_t array_index, uint32_t level,
+			uint32_t x_offset, uint32_t y_offset, uint32_t z_offset,
+			uint32_t width, uint32_t height, uint32_t depth,
+			void const * data, uint32_t row_pitch, uint32_t slice_pitch) override;
+		void UpdateSubresourceCube(uint32_t array_index, CubeFaces face, uint32_t level,
+			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
+			void const * data, uint32_t row_pitch) override;
+
+	protected:
+		bool HwBuildMipSubLevels(TextureFilter filter) override;
 
 	private:
-		virtual void Map1D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
-			uint32_t width, uint32_t x_offset,
-			void*& data);
-		virtual void Map2D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
-			uint32_t width, uint32_t height, uint32_t x_offset, uint32_t y_offset,
-			void*& data, uint32_t& row_pitch);
-		virtual void Map3D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
-			uint32_t width, uint32_t height, uint32_t depth,
+		void Map1D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
+			uint32_t x_offset, uint32_t width,
+			void*& data) override;
+		void Map2D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
+			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
+			void*& data, uint32_t& row_pitch) override;
+		void Map3D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
 			uint32_t x_offset, uint32_t y_offset, uint32_t z_offset,
-			void*& data, uint32_t& row_pitch, uint32_t& slice_pitch);
-		virtual void MapCube(uint32_t array_index, CubeFaces face, uint32_t level, TextureMapAccess tma,
-			uint32_t width, uint32_t height, uint32_t x_offset, uint32_t y_offset,
-			void*& data, uint32_t& row_pitch);
+			uint32_t width, uint32_t height, uint32_t depth,
+			void*& data, uint32_t& row_pitch, uint32_t& slice_pitch) override;
+		void MapCube(uint32_t array_index, CubeFaces face, uint32_t level, TextureMapAccess tma,
+			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
+			void*& data, uint32_t& row_pitch) override;
 
-		virtual void Unmap1D(uint32_t array_index, uint32_t level);
-		virtual void Unmap2D(uint32_t array_index, uint32_t level);
-		virtual void Unmap3D(uint32_t array_index, uint32_t level);
-		virtual void UnmapCube(uint32_t array_index, CubeFaces face, uint32_t level);
+		void Unmap1D(uint32_t array_index, uint32_t level) override;
+		void Unmap2D(uint32_t array_index, uint32_t level) override;
+		void Unmap3D(uint32_t array_index, uint32_t level) override;
+		void UnmapCube(uint32_t array_index, CubeFaces face, uint32_t level) override;
 
 	protected:
 		ElementFormat SRGBToRGB(ElementFormat pf);
@@ -91,123 +108,147 @@ namespace KlayGE
 		GLuint texture_;
 		GLenum target_type_;
 		TextureMapAccess last_tma_;
-		std::vector<std::vector<uint8_t> > tex_data_;
+		std::vector<std::vector<uint8_t>> tex_data_;
 
 		std::map<GLenum, GLint> tex_param_i_;
 		std::map<GLenum, GLfloat> tex_param_f_;
+
+		bool hw_res_ready_;
 	};
 
-	typedef shared_ptr<OGLESTexture> OGLES2TexturePtr;
+	typedef std::shared_ptr<OGLESTexture> OGLES2TexturePtr;
 
 
-	class OGLESTexture1D : public OGLESTexture
+	class OGLESTexture1D final : public OGLESTexture
 	{
 	public:
 		OGLESTexture1D(uint32_t width, uint32_t numMipMaps, uint32_t array_size, ElementFormat format,
-			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint, ElementInitData const * init_data);
+			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint);
 
-		uint32_t Width(uint32_t level) const;
+		uint32_t Width(uint32_t level) const override;
 
-		void CopyToTexture(Texture& target);
-		void CopyToSubTexture1D(Texture& target,
-			uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_width,
-			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_width);
+		void CopyToTexture(Texture& target, TextureFilter filter) override;
+		void CopyToSubTexture1D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_width,
+			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_width, TextureFilter filter) override;
 
-		virtual void ReclaimHWResource(ElementInitData const * init_data) KLAYGE_OVERRIDE;
+		void CreateHWResource(std::span<ElementInitData const> init_data, float4 const * clear_value_hint) override;
+
+		void UpdateSubresource1D(uint32_t array_index, uint32_t level,
+			uint32_t x_offset, uint32_t width,
+			void const * data) override;
 
 	private:
 		void Map1D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
-			uint32_t x_offset, uint32_t width, void*& data);
-		void Unmap1D(uint32_t array_index, uint32_t level);
+			uint32_t x_offset, uint32_t width, void*& data) override;
+		void Unmap1D(uint32_t array_index, uint32_t level) override;
 
 	private:
-		std::vector<uint32_t> widths_;
+		uint32_t width_;
 	};
 
-	class OGLESTexture2D : public OGLESTexture
+	class OGLESTexture2D final : public OGLESTexture
 	{
 	public:
 		OGLESTexture2D(uint32_t width, uint32_t height, uint32_t numMipMaps, uint32_t array_size, ElementFormat format,
-			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint, ElementInitData const * init_data);
+			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint);
 
-		uint32_t Width(uint32_t level) const;
-		uint32_t Height(uint32_t level) const;
+		uint32_t Width(uint32_t level) const override;
+		uint32_t Height(uint32_t level) const override;
 
-		void CopyToTexture(Texture& target);
-		void CopyToSubTexture2D(Texture& target,
-			uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height,
-			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height);
-		void CopyToSubTextureCube(Texture& target,
-			uint32_t dst_array_index, CubeFaces dst_face, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height,
-			uint32_t src_array_index, CubeFaces src_face, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height);
+		void CopyToTexture(Texture& target, TextureFilter filter) override;
+		void CopyToSubTexture2D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset,
+			uint32_t dst_width, uint32_t dst_height, uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset,
+			uint32_t src_y_offset, uint32_t src_width, uint32_t src_height, TextureFilter filter) override;
+		void CopyToSubTextureCube(Texture& target, uint32_t dst_array_index, CubeFaces dst_face, uint32_t dst_level, uint32_t dst_x_offset,
+			uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height, uint32_t src_array_index, CubeFaces src_face,
+			uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height,
+			TextureFilter filter) override;
 
-		virtual void ReclaimHWResource(ElementInitData const * init_data) KLAYGE_OVERRIDE;
+		void CreateHWResource(std::span<ElementInitData const> init_data, float4 const * clear_value_hint) override;
+
+		void UpdateSubresource2D(uint32_t array_index, uint32_t level,
+			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
+			void const * data, uint32_t row_pitch) override;
 
 	private:
 		void Map2D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
 			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
-			void*& data, uint32_t& row_pitch);
-		void Unmap2D(uint32_t array_index, uint32_t level);
+			void*& data, uint32_t& row_pitch) override;
+		void Unmap2D(uint32_t array_index, uint32_t level) override;
 
 	private:
-		std::vector<uint32_t> widths_;
-		std::vector<uint32_t> heights_;
+		uint32_t width_;
+		uint32_t height_;
 	};
 
-	class OGLESTexture3D : public OGLESTexture
+	class OGLESTexture3D final : public OGLESTexture
 	{
 	public:
 		OGLESTexture3D(uint32_t width, uint32_t height, uint32_t depth, uint32_t numMipMaps, uint32_t array_size, ElementFormat format,
-			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint, ElementInitData const * init_data);
+			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint);
 
-		uint32_t Width(uint32_t level) const;
-		uint32_t Height(uint32_t level) const;
-		uint32_t Depth(uint32_t level) const;
+		uint32_t Width(uint32_t level) const override;
+		uint32_t Height(uint32_t level) const override;
+		uint32_t Depth(uint32_t level) const override;
 
-		void CopyToTexture(Texture& target);
-		void CopyToSubTexture3D(Texture& target,
-			uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_z_offset, uint32_t dst_width, uint32_t dst_height, uint32_t dst_depth,
-			uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_z_offset, uint32_t src_width, uint32_t src_height, uint32_t src_depth);
+		void CopyToTexture(Texture& target, TextureFilter filter) override;
+		void CopyToSubTexture3D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset,
+			uint32_t dst_z_offset, uint32_t dst_width, uint32_t dst_height, uint32_t dst_depth, uint32_t src_array_index,
+			uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_z_offset, uint32_t src_width,
+			uint32_t src_height, uint32_t src_depth, TextureFilter filter) override;
 
-		virtual void ReclaimHWResource(ElementInitData const * init_data) KLAYGE_OVERRIDE;
+		void CreateHWResource(std::span<ElementInitData const> init_data, float4 const * clear_value_hint) override;
+
+		void UpdateSubresource3D(uint32_t array_index, uint32_t level,
+			uint32_t x_offset, uint32_t y_offset, uint32_t z_offset,
+			uint32_t width, uint32_t height, uint32_t depth,
+			void const * data, uint32_t row_pitch, uint32_t slice_pitch) override;
 
 	private:
 		void Map3D(uint32_t array_index, uint32_t level, TextureMapAccess tma,
 			uint32_t x_offset, uint32_t y_offset, uint32_t z_offset,
 			uint32_t width, uint32_t height, uint32_t depth,
-			void*& data, uint32_t& row_pitch, uint32_t& slice_pitch);
-		void Unmap3D(uint32_t array_index, uint32_t level);
+			void*& data, uint32_t& row_pitch, uint32_t& slice_pitch) override;
+		void Unmap3D(uint32_t array_index, uint32_t level) override;
 
 	private:
-		std::vector<uint32_t> widths_;
-		std::vector<uint32_t> heights_;
-		std::vector<uint32_t> depthes_;
+		uint32_t width_;
+		uint32_t height_;
+		uint32_t depth_;
 	};
 
-	class OGLESTextureCube : public OGLESTexture
+	class OGLESTextureCube final : public OGLESTexture
 	{
 	public:
 		OGLESTextureCube(uint32_t size, uint32_t numMipMaps, uint32_t array_size, ElementFormat format,
-			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint, ElementInitData const * init_data);
+			uint32_t sample_count, uint32_t sample_quality, uint32_t access_hint);
 
-		uint32_t Width(uint32_t level) const;
-		uint32_t Height(uint32_t level) const;
+		uint32_t Width(uint32_t level) const override;
+		uint32_t Height(uint32_t level) const override;
 
-		void CopyToTexture(Texture& target);
-		void CopyToSubTextureCube(Texture& target,
-			uint32_t dst_array_index, CubeFaces dst_face, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height,
-			uint32_t src_array_index, CubeFaces src_face, uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height);
+		void CopyToTexture(Texture& target, TextureFilter filter) override;
+		void CopyToSubTexture2D(Texture& target, uint32_t dst_array_index, uint32_t dst_level, uint32_t dst_x_offset, uint32_t dst_y_offset,
+			uint32_t dst_width, uint32_t dst_height, uint32_t src_array_index, uint32_t src_level, uint32_t src_x_offset,
+			uint32_t src_y_offset, uint32_t src_width, uint32_t src_height, TextureFilter filter) override;
+		void CopyToSubTextureCube(Texture& target, uint32_t dst_array_index, CubeFaces dst_face, uint32_t dst_level, uint32_t dst_x_offset,
+			uint32_t dst_y_offset, uint32_t dst_width, uint32_t dst_height, uint32_t src_array_index, CubeFaces src_face,
+			uint32_t src_level, uint32_t src_x_offset, uint32_t src_y_offset, uint32_t src_width, uint32_t src_height,
+			TextureFilter filter) override;
 
-		virtual void ReclaimHWResource(ElementInitData const * init_data) KLAYGE_OVERRIDE;
+		void CreateHWResource(std::span<ElementInitData const> init_data, float4 const * clear_value_hint) override;
+
+		void UpdateSubresourceCube(uint32_t array_index, CubeFaces face, uint32_t level,
+			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
+			void const * data, uint32_t row_pitch) override;
 
 	private:
 		void MapCube(uint32_t array_index, CubeFaces face, uint32_t level, TextureMapAccess tma,
 			uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height,
-			void*& data, uint32_t& row_pitch);
-		void UnmapCube(uint32_t array_index, CubeFaces face, uint32_t level);
+			void*& data, uint32_t& row_pitch) override;
+		void UnmapCube(uint32_t array_index, CubeFaces face, uint32_t level) override;
 
 	private:
-		std::vector<uint32_t> widths_;
+		uint32_t width_;
 	};
 }
 

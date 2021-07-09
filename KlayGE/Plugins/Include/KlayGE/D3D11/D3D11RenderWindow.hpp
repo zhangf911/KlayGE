@@ -15,45 +15,51 @@
 
 #pragma once
 
+#include <KFL/com_ptr.hpp>
+#include <KFL/SmartPtrHelper.hpp>
+
 #include <KlayGE/D3D11/D3D11FrameBuffer.hpp>
-#include <KlayGE/D3D11/D3D11Adapter.hpp>
+#include <KlayGE/Signal.hpp>
 
-#if defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
-#include <agile.h>
-#endif
-
+#if defined KLAYGE_PLATFORM_WINDOWS_STORE
+#include <winrt/Windows.Graphics.Display.Core.h>
 #ifdef KLAYGE_COMPILER_MSVC
 #pragma warning(push)
-#pragma warning(disable: 4100 4512 4702 4913 6011)
+#pragma warning(disable: 5205) // winrt::impl::implements_delegate doesn't have virtual destructor
 #endif
-#include <boost/signals2.hpp>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.UI.Core.h>
 #ifdef KLAYGE_COMPILER_MSVC
 #pragma warning(pop)
 #endif
 
-class IAmdDxExtQuadBufferStereo;
-typedef KlayGE::shared_ptr<IAmdDxExtQuadBufferStereo> IAmdDxExtQuadBufferStereoPtr;
+namespace uwp
+{
+	using winrt::get_abi;
+
+	using namespace winrt::Windows::Foundation;
+	using namespace winrt::Windows::Graphics::Display;
+	using namespace winrt::Windows::UI::Core;
+}
+#endif
 
 namespace KlayGE
 {
-#if defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
-	ref class MetroD3D11RenderWindow;
-#endif
-
 	struct RenderSettings;
+	class D3D11Adapter;
 
-	class D3D11RenderWindow : public D3D11FrameBuffer
+	class D3D11RenderWindow final : public D3D11FrameBuffer
 	{
 	public:
-		D3D11RenderWindow(IDXGIFactory1Ptr const & gi_factory, D3D11AdapterPtr const & adapter,
-			std::string const & name, RenderSettings const & settings);
+		D3D11RenderWindow(D3D11Adapter* adapter, std::string const& name, RenderSettings const& settings);
 		~D3D11RenderWindow();
 
 		void Destroy();
 
-		void SwapBuffers();
+		void SwapBuffers() override;
+		void WaitOnSwapBuffers() override;
 
-		std::wstring const & Description() const;
+		std::wstring const& Description() const override;
 
 		void Resize(uint32_t width, uint32_t height);
 		void Reposition(uint32_t left, uint32_t top);
@@ -61,138 +67,86 @@ namespace KlayGE
 		bool FullScreen() const;
 		void FullScreen(bool fs);
 
-		D3D11Adapter const & Adapter() const
+		D3D11Adapter const& Adapter() const
 		{
 			return *adapter_;
 		}
-		ID3D11Texture2DPtr const & D3DBackBuffer() const
+		TexturePtr const& D3DBackBuffer() const
 		{
 			return back_buffer_;
 		}
-		ID3D11Texture2DPtr const & D3DDepthStencilBuffer() const
+		TexturePtr const& D3DDepthStencilBuffer() const
 		{
 			return depth_stencil_;
 		}
-		ID3D11RenderTargetViewPtr const & D3DBackBufferRTV() const
+		RenderTargetViewPtr const& D3DBackBufferRtv() const
 		{
 			return render_target_view_;
 		}
-		ID3D11DepthStencilViewPtr const & D3DDepthStencilBufferDSV() const
-		{
-			return depth_stencil_view_;
-		}
-#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
-		ID3D11RenderTargetViewPtr const & D3DBackBufferRightEyeRTV() const
+		RenderTargetViewPtr const& D3DBackBufferRightEyeRtv() const
 		{
 			return render_target_view_right_eye_;
 		}
-#endif
-		uint32_t StereoRightEyeHeight() const
-		{
-			return stereo_amd_right_eye_height_;
-		}
-
-#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
-		ID3D11DepthStencilViewPtr const & D3DDepthStencilBufferRightEyeDSV() const
-		{
-			return depth_stencil_view_right_eye_;
-		}
-#endif
 
 		// Method for dealing with resize / move & 3d library
 		void WindowMovedOrResized();
 
 	private:
-		void OnPaint(Window const & win);
-		void OnExitSizeMove(Window const & win);
-		void OnSize(Window const & win, bool active);
-		void OnSetCursor(Window const & win);
+		void OnExitSizeMove(Window const& win);
+		void OnSize(Window const& win, bool active);
+
+#ifdef KLAYGE_PLATFORM_WINDOWS_STORE
+		HRESULT OnStereoEnabledChanged(uwp::DisplayInformation const& sender, uwp::IInspectable const& args);
+#endif
 
 	private:
 		void UpdateSurfacesPtrs();
-		void ResetDevice();
+		void CreateSwapChain(ID3D11Device* d3d_device, bool try_hdr_display);
 
 	private:
-		std::string	name_;
+		std::string name_;
 
 #ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
-		HWND	hWnd_;				// Win32 Window handle
+		HWND hWnd_; // Win32 Window handle
 #else
-		Platform::Agile<Windows::UI::Core::CoreWindow> wnd_;
-
-		ref class MetroD3D11RenderWindow
-		{
-			friend class D3D11RenderWindow;
-
-		public:
-#if (_WIN32_WINNT >= 0x0603 /*_WIN32_WINNT_WINBLUE*/)
-			void OnStereoEnabledChanged(Windows::Graphics::Display::DisplayInformation^ sender,
-				Platform::Object^ args);
-#else
-			void OnStereoEnabledChanged(Platform::Object^ sender);
+		uwp::CoreWindow wnd_{nullptr};
+		uwp::DisplayInformation::StereoEnabledChanged_revoker stereo_enabled_changed_token_;
 #endif
-
-		private:
-			void BindD3D11RenderWindow(D3D11RenderWindow* win);
-
-			D3D11RenderWindow* win_;
-		};
-
-		MetroD3D11RenderWindow^ metro_d3d_render_win_;
-#endif
-		bool	isFullScreen_;
+		bool isFullScreen_;
 		uint32_t sync_interval_;
 
-		D3D11AdapterPtr			adapter_;
+		D3D11Adapter* adapter_;
 
-		IDXGIFactory1Ptr gi_factory_;
-#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
-		IDXGIFactory2Ptr gi_factory_2_;
-		bool has_dxgi_1_2_;
-		bool dxgi_stereo_support_;
-#endif
-#if (_WIN32_WINNT >= 0x0603 /*_WIN32_WINNT_WINBLUE*/)
-		IDXGIFactory3Ptr gi_factory_3_;
-		bool has_dxgi_1_3_;
-#endif
+		bool dxgi_stereo_support_{false};
+		bool dxgi_allow_tearing_{false};
+		bool dxgi_async_swap_chain_{false};
 
-#ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
-		DXGI_SWAP_CHAIN_DESC sc_desc_;
-#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
 		DXGI_SWAP_CHAIN_DESC1 sc_desc1_;
+#ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
 		DXGI_SWAP_CHAIN_FULLSCREEN_DESC sc_fs_desc_;
 		DWORD stereo_cookie_;
 #endif
-#else
-		DXGI_SWAP_CHAIN_DESC1 sc_desc1_;
-#endif
-		IDXGISwapChainPtr		swap_chain_;
-		bool					main_wnd_;
+		IDXGISwapChain1Ptr swap_chain_1_;
+		bool main_wnd_;
+		Win32UniqueHandle frame_latency_waitable_obj_;
 
-		IAmdDxExtQuadBufferStereoPtr stereo_amd_qb_ext_;
-		uint32_t stereo_amd_right_eye_height_;
+		TexturePtr back_buffer_;
+		TexturePtr depth_stencil_;
+		RenderTargetViewPtr render_target_view_;
+		DepthStencilViewPtr depth_stencil_view_;
+		RenderTargetViewPtr render_target_view_right_eye_;
+		DepthStencilViewPtr depth_stencil_view_right_eye_;
 
-		ID3D11Texture2DPtr			back_buffer_;
-		ID3D11Texture2DPtr			depth_stencil_;
-		ID3D11RenderTargetViewPtr	render_target_view_;
-		ID3D11DepthStencilViewPtr	depth_stencil_view_;
-#if (_WIN32_WINNT >= 0x0602 /*_WIN32_WINNT_WIN8*/)
-		ID3D11RenderTargetViewPtr	render_target_view_right_eye_;
-		ID3D11DepthStencilViewPtr	depth_stencil_view_right_eye_;
-#endif
+		DXGI_FORMAT back_buffer_format_;
+		ElementFormat depth_stencil_fmt_;
 
-		DXGI_FORMAT					back_buffer_format_;
-		DXGI_FORMAT					depth_stencil_format_;
+		std::wstring description_;
 
-		std::wstring			description_;
-
-		boost::signals2::connection on_paint_connect_;
-		boost::signals2::connection on_exit_size_move_connect_;
-		boost::signals2::connection on_size_connect_;
-		boost::signals2::connection on_set_cursor_connect_;
+		Signal::Connection on_exit_size_move_connect_;
+		Signal::Connection on_size_connect_;
 	};
 
-	typedef shared_ptr<D3D11RenderWindow> D3D11RenderWindowPtr;
-}
+	typedef std::shared_ptr<D3D11RenderWindow> D3D11RenderWindowPtr;
+} // namespace KlayGE
 
-#endif			// _D3D11RENDERWINDOW_HPP
+#endif // _D3D11RENDERWINDOW_HPP

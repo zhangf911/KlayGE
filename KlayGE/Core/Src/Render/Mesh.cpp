@@ -20,6 +20,9 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/CXX17/filesystem.hpp>
+#include <KFL/CXX2a/span.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/RenderFactory.hpp>
@@ -31,14 +34,16 @@
 #include <KFL/XMLDom.hpp>
 #include <KlayGE/LZMACodec.hpp>
 #include <KlayGE/Light.hpp>
+#include <KlayGE/RenderMaterial.hpp>
+#include <KlayGE/DevHelper.hpp>
+#include <KFL/Hash.hpp>
+#include <KlayGE/DeferredRenderingLayer.hpp>
+#include <KlayGE/SceneManager.hpp>
 
 #include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <cstring>
-#include <boost/functional/hash.hpp>
-
-#include <MeshMLLib/MeshMLLib.hpp>
 
 #include <KlayGE/Mesh.hpp>
 
@@ -46,7 +51,7 @@ namespace
 {
 	using namespace KlayGE;
 
-	uint32_t const MODEL_BIN_VERSION = 9;
+	uint32_t const MODEL_BIN_VERSION = 19;
 
 	class RenderModelLoadingDesc : public ResLoadingDesc
 	{
@@ -55,558 +60,533 @@ namespace
 		{
 			std::string res_name;
 			uint32_t access_hint;
-			function<RenderModelPtr(std::wstring const &)> CreateModelFactoryFunc;
-			function<StaticMeshPtr(RenderModelPtr const &, std::wstring const &)> CreateMeshFactoryFunc;
+			uint32_t node_attrib;
+			std::function<void(RenderModel&)> OnFinishLoading;
+			std::function<RenderModelPtr(std::wstring_view, uint32_t)> CreateModelFactoryFunc;
+			std::function<StaticMeshPtr(std::wstring_view)> CreateMeshFactoryFunc;
 
-			struct ModelData
-			{
-				std::vector<RenderMaterialPtr> mtls;
-				std::vector<vertex_element> merged_ves;
-				char all_is_index_16_bit;
-				std::vector<std::vector<uint8_t> > merged_buff;
-				std::vector<uint8_t> merged_indices;
-				std::vector<std::string> mesh_names;
-				std::vector<int32_t> mtl_ids;
-				std::vector<AABBox> pos_bbs;
-				std::vector<AABBox> tc_bbs;
-				std::vector<uint32_t> mesh_num_vertices;
-				std::vector<uint32_t> mesh_base_vertices;
-				std::vector<uint32_t> mesh_num_indices;
-				std::vector<uint32_t> mesh_start_indices;
-				std::vector<Joint> joints;
-				shared_ptr<AnimationActionsType> actions;
-				shared_ptr<KeyFramesType> kfs;
-				uint32_t num_frames;
-				uint32_t frame_rate;
-				std::vector<shared_ptr<AABBKeyFrames> > frame_pos_bbs;
-			};
-			shared_ptr<ModelData> model_data;
+			RenderModelPtr sw_model;
 
-			shared_ptr<RenderModelPtr> model;
+			std::shared_ptr<RenderModelPtr> model;
 		};
 
 	public:
-		RenderModelLoadingDesc(std::string const & res_name, uint32_t access_hint, 
-			function<RenderModelPtr(std::wstring const &)> CreateModelFactoryFunc,
-			function<StaticMeshPtr(RenderModelPtr const &, std::wstring const &)> CreateMeshFactoryFunc)
+		RenderModelLoadingDesc(std::string_view res_name, uint32_t access_hint, uint32_t node_attrib,
+			std::function<void(RenderModel&)> OnFinishLoading,
+			std::function<RenderModelPtr(std::wstring_view, uint32_t)> CreateModelFactoryFunc,
+			std::function<StaticMeshPtr(std::wstring_view)> CreateMeshFactoryFunc)
 		{
-			model_desc_.res_name = res_name;
+			model_desc_.res_name = std::string(res_name);
 			model_desc_.access_hint = access_hint;
+			model_desc_.node_attrib = node_attrib;
+			model_desc_.OnFinishLoading = OnFinishLoading;
 			model_desc_.CreateModelFactoryFunc = CreateModelFactoryFunc;
 			model_desc_.CreateMeshFactoryFunc = CreateMeshFactoryFunc;
-			model_desc_.model_data = MakeSharedPtr<ModelDesc::ModelData>();
 			model_desc_.model = MakeSharedPtr<RenderModelPtr>();
+
+			this->AddsSubPath();
 		}
 
-		uint64_t Type() const
+		uint64_t Type() const override
 		{
 			static uint64_t const type = CT_HASH("RenderModelLoadingDesc");
 			return type;
 		}
 
-		bool StateLess() const
+		bool StateLess() const override
 		{
 			return false;
 		}
 
-		void SubThreadStage()
+		std::shared_ptr<void> CreateResource() override
 		{
-			LoadModel(model_desc_.res_name, model_desc_.model_data->mtls, model_desc_.model_data->merged_ves,
-				model_desc_.model_data->all_is_index_16_bit,
-				model_desc_.model_data->merged_buff, model_desc_.model_data->merged_indices,
-				model_desc_.model_data->mesh_names, model_desc_.model_data->mtl_ids,
-				model_desc_.model_data->pos_bbs, model_desc_.model_data->tc_bbs,
-				model_desc_.model_data->mesh_num_vertices, model_desc_.model_data->mesh_base_vertices,
-				model_desc_.model_data->mesh_num_indices, model_desc_.model_data->mesh_start_indices, 
-				model_desc_.model_data->joints, model_desc_.model_data->actions, model_desc_.model_data->kfs,
-				model_desc_.model_data->num_frames, model_desc_.model_data->frame_rate,
-				model_desc_.model_data->frame_pos_bbs);
+			RenderModelPtr model = model_desc_.CreateModelFactoryFunc(L"Model", model_desc_.node_attrib);
+			*model_desc_.model = model;
+			return model;
+		}
+
+		void SubThreadStage() override
+		{
+			std::lock_guard<std::mutex> lock(main_thread_stage_mutex_);
+
+			RenderModelPtr const & model = *model_desc_.model;
+			if (model && model->HWResourceReady())
+			{
+				return;
+			}
+
+			model_desc_.sw_model = LoadSoftwareModel(model_desc_.res_name);
 
 			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 			RenderDeviceCaps const & caps = rf.RenderEngineInstance().DeviceCaps();
 			if (caps.multithread_res_creating_support)
 			{
-				this->MainThreadStage();
+				this->MainThreadStageNoLock();
 			}
 		}
 
-		shared_ptr<void> MainThreadStage()
+		void MainThreadStage() override
 		{
-			if (!*model_desc_.model)
-			{
-				RenderModelPtr model = this->CreateModel();
-				*model_desc_.model = model;
-
-				model->BuildModelInfo();
-				for (uint32_t i = 0; i < model->NumSubrenderables(); ++ i)
-				{
-					checked_pointer_cast<StaticMesh>(model->Subrenderable(i))->BuildMeshInfo();
-				}
-
-				model_desc_.model_data.reset();
-			}
-			return static_pointer_cast<void>(*model_desc_.model);
+			std::lock_guard<std::mutex> lock(main_thread_stage_mutex_);
+			this->MainThreadStageNoLock();
 		}
 
-		bool HasSubThreadStage() const
+		bool HasSubThreadStage() const override
 		{
 			return true;
 		}
 
-		bool Match(ResLoadingDesc const & rhs) const
+		bool Match(ResLoadingDesc const & rhs) const override
 		{
-			if (this->Type() == rhs.Type())
-			{
-				RenderModelLoadingDesc const & rmld = static_cast<RenderModelLoadingDesc const &>(rhs);
-				return (model_desc_.res_name == rmld.model_desc_.res_name)
-					&& (model_desc_.access_hint == rmld.model_desc_.access_hint);
-			}
+			KFL_UNUSED(rhs);
 			return false;
 		}
 
-		void CopyDataFrom(ResLoadingDesc const & rhs)
+		void CopyDataFrom(ResLoadingDesc const & rhs) override
 		{
 			BOOST_ASSERT(this->Type() == rhs.Type());
 
 			RenderModelLoadingDesc const & rmld = static_cast<RenderModelLoadingDesc const &>(rhs);
 			model_desc_.res_name = rmld.model_desc_.res_name;
 			model_desc_.access_hint = rmld.model_desc_.access_hint;
-			model_desc_.model_data = rmld.model_desc_.model_data;
+			model_desc_.sw_model = rmld.model_desc_.sw_model;
 			model_desc_.model = rmld.model_desc_.model;
 		}
 
-		shared_ptr<void> CloneResourceFrom(shared_ptr<void> const & resource)
+		std::shared_ptr<void> CloneResourceFrom(std::shared_ptr<void> const & resource) override
 		{
-			RenderModelPtr rhs_model = static_pointer_cast<RenderModel>(resource);
-			RenderModelPtr model = model_desc_.CreateModelFactoryFunc(rhs_model->Name());
-
-			model->NumMaterials(rhs_model->NumMaterials());
-			for (uint32_t mtl_index = 0; mtl_index < model->NumMaterials(); ++ mtl_index)
-			{
-				RenderMaterialPtr mtl = MakeSharedPtr<RenderMaterial>();
-				*mtl = *rhs_model->GetMaterial(mtl_index);
-				model->GetMaterial(mtl_index) = mtl;
-			}
-
-			if (rhs_model->NumSubrenderables() > 0)
-			{
-				RenderLayoutPtr rhs_rl = rhs_model->Subrenderable(0)->GetRenderLayout();
-			
-				std::vector<StaticMeshPtr> meshes(rhs_model->NumSubrenderables());
-				for (uint32_t mesh_index = 0; mesh_index < rhs_model->NumSubrenderables(); ++ mesh_index)
-				{
-					StaticMeshPtr rhs_mesh = checked_pointer_cast<StaticMesh>(rhs_model->Subrenderable(mesh_index));
-
-					meshes[mesh_index] = model_desc_.CreateMeshFactoryFunc(model, rhs_mesh->Name());
-					StaticMeshPtr& mesh = meshes[mesh_index];
-
-					mesh->MaterialID(rhs_mesh->MaterialID());
-					mesh->PosBound(rhs_mesh->PosBound());
-					mesh->TexcoordBound(rhs_mesh->TexcoordBound());
-
-					for (uint32_t ve_index = 0; ve_index < rhs_rl->NumVertexStreams(); ++ ve_index)
-					{
-						mesh->AddVertexStream(rhs_rl->GetVertexStream(ve_index),
-							rhs_rl->VertexStreamFormat(ve_index)[0]);
-					}
-					mesh->AddIndexStream(rhs_rl->GetIndexStream(), rhs_rl->IndexStreamFormat());
-
-					mesh->NumVertices(rhs_mesh->NumVertices());
-					mesh->NumTriangles(rhs_mesh->NumTriangles());
-					mesh->StartVertexLocation(rhs_mesh->StartVertexLocation());
-					mesh->StartIndexLocation(rhs_mesh->StartIndexLocation());
-				}
-
-				BOOST_ASSERT(model->IsSkinned() == rhs_model->IsSkinned());
-
-				if (rhs_model->IsSkinned())
-				{
-					SkinnedModelPtr rhs_skinned_model = checked_pointer_cast<SkinnedModel>(rhs_model);
-					SkinnedModelPtr skinned_model = checked_pointer_cast<SkinnedModel>(model);
-
-					std::vector<Joint> joints(rhs_skinned_model->NumJoints());
-					for (uint32_t i = 0; i < rhs_skinned_model->NumJoints(); ++ i)
-					{
-						joints[i] = rhs_skinned_model->GetJoint(i);
-					}
-					skinned_model->AssignJoints(joints.begin(), joints.end());
-					skinned_model->AttachKeyFrames(rhs_skinned_model->GetKeyFrames());
-
-					skinned_model->NumFrames(rhs_skinned_model->NumFrames());
-					skinned_model->FrameRate(rhs_skinned_model->FrameRate());
-
-					for (size_t mesh_index = 0; mesh_index < meshes.size(); ++ mesh_index)
-					{
-						SkinnedMeshPtr rhs_skinned_mesh = checked_pointer_cast<SkinnedMesh>(rhs_skinned_model->Subrenderable(mesh_index));
-						SkinnedMeshPtr skinned_mesh = checked_pointer_cast<SkinnedMesh>(meshes[mesh_index]);
-						skinned_mesh->AttachFramePosBounds(rhs_skinned_mesh->GetFramePosBounds());
-					}
-				}
-
-				model->AssignSubrenderables(meshes.begin(), meshes.end());
-			}
+			auto rhs_model = std::static_pointer_cast<RenderModel>(resource);
+			auto model = model_desc_.CreateModelFactoryFunc(rhs_model->RootNode()->Name(), rhs_model->RootNode()->Attrib());
+			model->CloneDataFrom(*rhs_model, model_desc_.CreateMeshFactoryFunc);
 
 			model->BuildModelInfo();
-			for (uint32_t i = 0; i < model->NumSubrenderables(); ++ i)
+			for (uint32_t i = 0; i < model->NumMeshes(); ++ i)
 			{
-				checked_pointer_cast<StaticMesh>(model->Subrenderable(i))->BuildMeshInfo();
+				checked_pointer_cast<StaticMesh>(model->Mesh(i))->BuildMeshInfo(*model);
+			}
+			
+			if (model_desc_.OnFinishLoading)
+			{
+				model_desc_.OnFinishLoading(*model);
 			}
 
-			return static_pointer_cast<void>(model);
+			return std::static_pointer_cast<void>(model);
+		}
+
+		std::shared_ptr<void> Resource() const override
+		{
+			return *model_desc_.model;
 		}
 
 	private:
-		RenderModelPtr CreateModel()
+		void FillModel()
 		{
-			std::wstring model_name;
-			if (!model_desc_.model_data->joints.empty())
-			{
-				model_name = L"SkinnedMesh";
-			}
-			else
-			{
-				model_name = L"Mesh";
-			}
-			RenderModelPtr model = model_desc_.CreateModelFactoryFunc(model_name);
+			auto const & model = *model_desc_.model;
+			auto const & sw_model = *model_desc_.sw_model;
 
-			model->NumMaterials(model_desc_.model_data->mtls.size());
-			for (uint32_t mtl_index = 0; mtl_index < model_desc_.model_data->mtls.size(); ++ mtl_index)
-			{
-				model->GetMaterial(mtl_index) = model_desc_.model_data->mtls[mtl_index];
-			}
+			model->CloneDataFrom(sw_model, model_desc_.CreateMeshFactoryFunc);
 
 			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+			auto const & sw_rl = checked_pointer_cast<StaticMesh>(sw_model.Mesh(0))->GetRenderLayout(0);
 
-			ElementInitData init_data;
-			std::vector<GraphicsBufferPtr> merged_vbs(model_desc_.model_data->merged_buff.size());
-			for (size_t i = 0; i < model_desc_.model_data->merged_buff.size(); ++ i)
+			std::vector<GraphicsBufferPtr> merged_vbs(sw_rl.NumVertexStreams());
+			for (uint32_t i = 0; i < sw_rl.NumVertexStreams(); ++ i)
 			{
-				init_data.data = &model_desc_.model_data->merged_buff[i][0];
-				init_data.row_pitch = static_cast<uint32_t>(model_desc_.model_data->merged_buff[i].size());
-				init_data.slice_pitch = 0;
-				merged_vbs[i] = rf.MakeVertexBuffer(BU_Static, model_desc_.access_hint, &init_data);
+				merged_vbs[i] = rf.MakeDelayCreationVertexBuffer(BU_Static, model_desc_.access_hint, sw_rl.GetVertexStream(i)->Size());
 			}
+			auto merged_ib = rf.MakeDelayCreationIndexBuffer(BU_Static, model_desc_.access_hint, sw_rl.GetIndexStream()->Size());
 
-			GraphicsBufferPtr merged_ib;
+			for (uint32_t mesh_index = 0; mesh_index < model->NumMeshes(); ++ mesh_index)
 			{
-				init_data.data = &model_desc_.model_data->merged_indices[0];
-				init_data.row_pitch = static_cast<uint32_t>(model_desc_.model_data->merged_indices.size());
-				init_data.slice_pitch = 0;
-				merged_ib = rf.MakeIndexBuffer(BU_Static, model_desc_.access_hint, &init_data);
-			}
-
-			std::vector<StaticMeshPtr> meshes(model_desc_.model_data->mesh_names.size());
-			for (uint32_t mesh_index = 0; mesh_index < model_desc_.model_data->mesh_names.size(); ++ mesh_index)
-			{
-				std::wstring wname;
-				Convert(wname, model_desc_.model_data->mesh_names[mesh_index]);
-
-				meshes[mesh_index] = model_desc_.CreateMeshFactoryFunc(model, wname);
-				StaticMeshPtr& mesh = meshes[mesh_index];
-
-				mesh->MaterialID(model_desc_.model_data->mtl_ids[mesh_index]);
-				mesh->PosBound(model_desc_.model_data->pos_bbs[mesh_index]);
-				mesh->TexcoordBound(model_desc_.model_data->tc_bbs[mesh_index]);
-
-				for (uint32_t ve_index = 0; ve_index < model_desc_.model_data->merged_buff.size(); ++ ve_index)
+				for (uint32_t lod = 0; lod < model->Mesh(mesh_index)->NumLods(); ++ lod)
 				{
-					mesh->AddVertexStream(merged_vbs[ve_index], model_desc_.model_data->merged_ves[ve_index]);
-				}
-				mesh->AddIndexStream(merged_ib, model_desc_.model_data->all_is_index_16_bit ? EF_R16UI : EF_R32UI);
-
-				mesh->NumVertices(model_desc_.model_data->mesh_num_vertices[mesh_index]);
-				mesh->NumTriangles(model_desc_.model_data->mesh_num_indices[mesh_index] / 3);
-				mesh->StartVertexLocation(model_desc_.model_data->mesh_base_vertices[mesh_index]);
-				mesh->StartIndexLocation(model_desc_.model_data->mesh_start_indices[mesh_index]);
-			}
-
-			if (model_desc_.model_data->kfs && !model_desc_.model_data->kfs->empty())
-			{
-				if (model->IsSkinned())
-				{
-					SkinnedModelPtr skinned_model = checked_pointer_cast<SkinnedModel>(model);
-
-					skinned_model->AssignJoints(model_desc_.model_data->joints.begin(), model_desc_.model_data->joints.end());
-					skinned_model->AttachKeyFrames(model_desc_.model_data->kfs);
-
-					skinned_model->NumFrames(model_desc_.model_data->num_frames);
-					skinned_model->FrameRate(model_desc_.model_data->frame_rate);
-
-					for (size_t mesh_index = 0; mesh_index < meshes.size(); ++ mesh_index)
+					auto& rl = model->Mesh(mesh_index)->GetRenderLayout(lod);
+					for (uint32_t i = 0; i < sw_rl.NumVertexStreams(); ++ i)
 					{
-						SkinnedMeshPtr skinned_mesh = checked_pointer_cast<SkinnedMesh>(meshes[mesh_index]);
-						skinned_mesh->AttachFramePosBounds(model_desc_.model_data->frame_pos_bbs[mesh_index]);
+						rl.SetVertexStream(i, merged_vbs[i]);
 					}
+					rl.BindIndexStream(merged_ib, rl.IndexStreamFormat());
 				}
 			}
+		}
 
-			model->AssignSubrenderables(meshes.begin(), meshes.end());
+		void AddsSubPath()
+		{
+			std::string sub_path;
+			auto sub_path_loc = model_desc_.res_name.find_last_of('/');
+			if (sub_path_loc != std::string::npos)
+			{
+				sub_path = ResLoader::Instance().Locate(model_desc_.res_name.substr(0, sub_path_loc));
+				if (!sub_path.empty())
+				{
+					ResLoader::Instance().AddPath(sub_path);
+				}
+			}
+		}
 
-			return model;
+		void MainThreadStageNoLock()
+		{
+			RenderModelPtr const & model = *model_desc_.model;
+			if (!model || !model->HWResourceReady())
+			{
+				this->FillModel();
+
+				auto const & sw_model = *model_desc_.sw_model;
+
+				auto const & caps = Context::Instance().RenderFactoryInstance().RenderEngineInstance().DeviceCaps();
+				auto const & rl = checked_pointer_cast<StaticMesh>(model->Mesh(0))->GetRenderLayout();
+				auto const & sw_rl = checked_pointer_cast<StaticMesh>(sw_model.Mesh(0))->GetRenderLayout();
+
+				for (uint32_t i = 0; i < rl.NumVertexStreams(); ++ i)
+				{
+					GraphicsBuffer::Mapper mapper(*sw_rl.GetVertexStream(i), BA_Read_Only);
+
+					uint32_t const num_vertices = sw_rl.GetVertexStream(i)->Size() / sizeof(uint32_t);
+
+					void* ptr = mapper.Pointer<void>();
+					auto ve = sw_rl.VertexStreamFormat(i)[0];
+
+					std::vector<uint8_t> buff;
+					if (!caps.VertexFormatSupport(ve.format))
+					{
+						buff.resize(sw_rl.GetVertexStream(i)->Size());
+						ptr = buff.data();
+
+						uint32_t const * src = mapper.Pointer<uint32_t>();
+						uint32_t* dst = static_cast<uint32_t*>(ptr);
+
+						if (ve.format == EF_A2BGR10)
+						{
+							ve.format = caps.BestMatchVertexFormat(MakeSpan({EF_ARGB8, EF_ABGR8}));
+
+							if (ve.format == EF_ARGB8)
+							{
+								for (uint32_t j = 0; j < num_vertices; ++ j)
+								{
+									float x = ((src[j] >> 0) & 0x3FF) / 1023.0f;
+									float y = ((src[j] >> 10) & 0x3FF) / 1023.0f;
+									float z = ((src[j] >> 20) & 0x3FF) / 1023.0f;
+									float w = ((src[j] >> 30) & 0x3) / 3.0f;
+
+									dst[j] = (MathLib::clamp<uint32_t>(static_cast<uint32_t>(x * 255), 0, 255) << 16)
+										| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(y * 255), 0, 255) << 8)
+										| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(z * 255), 0, 255) << 0)
+										| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(w * 255), 0, 255) << 24);
+								}
+							}
+							else
+							{
+								for (uint32_t j = 0; j < num_vertices; ++ j)
+								{
+									float x = ((src[j] >> 0) & 0x3FF) / 1023.0f;
+									float y = ((src[j] >> 10) & 0x3FF) / 1023.0f;
+									float z = ((src[j] >> 20) & 0x3FF) / 1023.0f;
+									float w = ((src[j] >> 30) & 0x3) / 3.0f;
+
+									dst[j] = (MathLib::clamp<uint32_t>(static_cast<uint32_t>(x * 255), 0, 255) << 0)
+										| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(y * 255), 0, 255) << 8)
+										| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(z * 255), 0, 255) << 16)
+										| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(w * 255), 0, 255) << 24);
+								}
+							}
+						}
+						else if (ve.format == EF_ARGB8)
+						{
+							BOOST_ASSERT(caps.VertexFormatSupport(EF_ABGR8));
+
+							ve.format = EF_ABGR8;
+
+							for (uint32_t j = 0; j < num_vertices; ++ j)
+							{
+								float x = ((src[j] >> 16) & 0xFF) / 255.0f;
+								float y = ((src[j] >> 8) & 0xFF) / 255.0f;
+								float z = ((src[j] >> 0) & 0xFF) / 255.0f;
+								float w = ((src[j] >> 24) & 0xFF) / 255.0f;
+
+								dst[j] = (MathLib::clamp<uint32_t>(static_cast<uint32_t>(x * 255), 0, 255) << 0)
+									| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(y * 255), 0, 255) << 8)
+									| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(z * 255), 0, 255) << 16)
+									| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(w * 255), 0, 255) << 24);
+							}
+						}
+						else
+						{
+							KFL_UNREACHABLE("Invalid vertex format");
+						}
+					}
+
+					rl.GetVertexStream(i)->CreateHWResource(ptr);
+				}
+				{
+					GraphicsBuffer::Mapper mapper(*sw_rl.GetIndexStream(), BA_Read_Only);
+					rl.GetIndexStream()->CreateHWResource(mapper.Pointer<void>());
+				}
+
+				model->BuildModelInfo();
+				for (uint32_t i = 0; i < model->NumMeshes(); ++ i)
+				{
+					checked_pointer_cast<StaticMesh>(model->Mesh(i))->BuildMeshInfo(*model);
+				}
+
+				model_desc_.sw_model.reset();
+
+				if (model_desc_.OnFinishLoading)
+				{
+					model_desc_.OnFinishLoading(*model);
+				}
+			}
 		}
 
 	private:
 		ModelDesc model_desc_;
+		std::mutex main_thread_stage_mutex_;
 	};
 }
 
 namespace KlayGE
 {
-	RenderModel::RenderModel(std::wstring const & name)
-		: name_(name)
+	void AddToSceneHelper(SceneNode& node, RenderModel& model)
+	{
+		auto& scene_mgr = Context::Instance().SceneManagerInstance();
+		std::lock_guard<std::mutex> lock(scene_mgr.MutexForUpdate());
+		node.AddChild(model.RootNode());
+	}
+
+	void AddToSceneRootHelper(RenderModel& model)
+	{
+		AddToSceneHelper(Context::Instance().SceneManagerInstance().SceneRootNode(), model);
+	}
+
+	RenderModel::RenderModel(SceneNodePtr const & root_node)
+		: root_node_(root_node),
+			hw_res_ready_(false)
 	{
 	}
 
-	void RenderModel::AddToRenderQueue()
-	{
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::reference mesh, subrenderables_)
-		{
-			mesh->AddToRenderQueue();
-		}
-	}
-
-	void RenderModel::OnRenderBegin()
-	{
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::reference mesh, subrenderables_)
-		{
-			mesh->OnRenderBegin();
-		}
-	}
-
-	void RenderModel::OnRenderEnd()
-	{
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::reference mesh, subrenderables_)
-		{
-			mesh->OnRenderEnd();
-		}
-	}
-
-	AABBox const & RenderModel::PosBound() const
-	{
-		return pos_aabb_;
-	}
-
-	AABBox const & RenderModel::TexcoordBound() const
-	{
-		return tc_aabb_;
-	}
-
-	void RenderModel::UpdateBoundBox()
-	{
-		pos_aabb_ = AABBox(float3(0, 0, 0), float3(0, 0, 0));
-		tc_aabb_ = AABBox(float3(0, 0, 0), float3(0, 0, 0));
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			pos_aabb_ |= mesh->PosBound();
-			tc_aabb_ |= mesh->TexcoordBound();
-		}
-	}
-
-	void RenderModel::Pass(PassType type)
-	{
-		Renderable::Pass(type);
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			mesh->Pass(type);
-		}
-	}
-
-	bool RenderModel::SpecialShading() const
-	{
-		bool ss = false;
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			ss |= mesh->SpecialShading();
-		}
-		return ss;
-	}
-	
-	bool RenderModel::TransparencyBackFace() const
-	{
-		bool ab = false;
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			ab |= mesh->TransparencyBackFace();
-		}
-		return ab;
-	}
-
-	bool RenderModel::TransparencyFrontFace() const
-	{
-		bool ab = false;
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			ab |= mesh->TransparencyFrontFace();
-		}
-		return ab;
-	}
-
-	bool RenderModel::Reflection() const
-	{
-		bool ab = false;
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			ab |= mesh->Reflection();
-		}
-		return ab;
-	}
-
-	bool RenderModel::SimpleForward() const
-	{
-		bool ab = false;
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			ab |= mesh->SimpleForward();
-		}
-		return ab;
-	}
-
-
-	StaticMesh::StaticMesh(RenderModelPtr const & model, std::wstring const & name)
-		: name_(name), model_(model)
-	{
-		rl_ = Context::Instance().RenderFactoryInstance().MakeRenderLayout();
-		rl_->TopologyType(RenderLayout::TT_TriangleList);
-	}
-
-	StaticMesh::~StaticMesh()
+	RenderModel::RenderModel(std::wstring_view name, uint32_t node_attrib)
+		: RenderModel(MakeSharedPtr<SceneNode>(name, node_attrib))
 	{
 	}
 
-	void StaticMesh::BuildMeshInfo()
+	RenderModel::~RenderModel() noexcept = default;
+
+	void RenderModel::BuildModelInfo()
 	{
-		opacity_map_enabled_ = false;
+		this->DoBuildModelInfo();
+		root_node_->UpdatePosBoundSubtree();
 
-		RenderModelPtr model = model_.lock();
+		hw_res_ready_ = true;
+	}
 
-		mtl_ = model->GetMaterial(this->MaterialID());
-		TextureSlotsType const & texture_slots = mtl_->texture_slots;
-		for (TextureSlotsType::const_iterator iter = texture_slots.begin();
-			iter != texture_slots.end(); ++ iter)
-		{
-			function<TexturePtr()> tl;
-			if (!ResLoader::Instance().Locate(iter->second).empty())
+	uint32_t RenderModel::NumLods() const
+	{
+		uint32_t max_lod = 0;
+		this->ForEachMesh([&max_lod](Renderable& mesh)
 			{
-				tl = ASyncLoadTexture(iter->second, EAH_GPU_Read | EAH_Immutable);
-			}
+				max_lod = std::max(max_lod, mesh.NumLods());
+			});
+		return max_lod;
+	}
 
-			size_t const slot_type_hash = RT_HASH(iter->first.c_str());
+	void RenderModel::ActiveLod(int32_t lod)
+	{
+		this->ForEachMesh([lod](Renderable& mesh)
+			{
+				mesh.ActiveLod(lod);
+			});
+	}
 
-			if ((CT_HASH("Color") == slot_type_hash) || (CT_HASH("Diffuse Color") == slot_type_hash)
-				|| (CT_HASH("Diffuse Color Map") == slot_type_hash))
+	bool RenderModel::HWResourceReady() const
+	{
+		bool ready = hw_res_ready_;
+		if (ready)
+		{
+			for (auto const & mesh : meshes_)
 			{
-				diffuse_tl_ = tl;
-			}
-			else if ((CT_HASH("Specular Level") == slot_type_hash) || (CT_HASH("Specular Color") == slot_type_hash))
-			{
-				specular_tl_ = tl;
-			}
-			else if ((CT_HASH("Glossiness") == slot_type_hash) || (CT_HASH("Reflection Glossiness Map") == slot_type_hash))
-			{
-				shininess_tl_ = tl;
-			}
-			else if ((CT_HASH("Bump") == slot_type_hash) || (CT_HASH("Bump Map") == slot_type_hash))
-			{
-				normal_tl_ = tl;
-			}
-			else if ((CT_HASH("Height") == slot_type_hash) || (CT_HASH("Height Map") == slot_type_hash))
-			{
-				height_tl_ = tl;
-			}
-			else if (CT_HASH("Self-Illumination") == slot_type_hash)
-			{
-				emit_tl_ = tl;
-			}
-			else if (CT_HASH("Opacity") == slot_type_hash)
-			{
-				ResIdentifierPtr tex_file = ResLoader::Instance().Open(iter->second);
-				if (tex_file)
+				ready &= mesh->HWResourceReady();
+				if (!ready)
 				{
-					Texture::TextureType type;
-					uint32_t width, height, depth;
-					uint32_t num_mipmaps;
-					uint32_t array_size;
-					ElementFormat format;
-					uint32_t row_pitch, slice_pitch;
-					GetImageInfo(tex_file, type, width, height, depth, num_mipmaps, array_size, format,
-						row_pitch, slice_pitch);
+					break;
+				}
+			}
+		}
+		return ready;
+	}
 
-					opacity_map_enabled_ = true;
+	void RenderModel::ForEachMesh(std::function<void(Renderable&)> const & callback) const
+	{
+		for (auto const & mesh : meshes_)
+		{
+			callback(*mesh);
+		}
+	}
 
-					if ((EF_BC1 == format) || (EF_BC1_SRGB == format))
+	RenderModelPtr RenderModel::Clone(std::function<RenderModelPtr(std::wstring_view, uint32_t)> const & CreateModelFactoryFunc,
+		std::function<StaticMeshPtr(std::wstring_view)> const & CreateMeshFactoryFunc)
+	{
+		auto ret_model = CreateModelFactoryFunc(root_node_->Name(), root_node_->Attrib());
+		ret_model->CloneDataFrom(*this, CreateMeshFactoryFunc);
+
+		ret_model->BuildModelInfo();
+		for (auto const & ret_mesh : ret_model->meshes_)
+		{
+			checked_pointer_cast<StaticMesh>(ret_mesh)->BuildMeshInfo(*ret_model);
+		}
+
+		return ret_model;
+	}
+
+	void RenderModel::CloneDataFrom(RenderModel const & source,
+		std::function<StaticMeshPtr(std::wstring_view)> const & CreateMeshFactoryFunc)
+	{
+		this->NumMaterials(source.NumMaterials());
+		for (uint32_t mtl_index = 0; mtl_index < source.NumMaterials(); ++ mtl_index)
+		{
+			auto& mtl = this->GetMaterial(mtl_index);
+			mtl = source.GetMaterial(mtl_index)->Clone();
+			mtl->LoadTextureSlots();
+		}
+
+		if (source.NumMeshes() > 0)
+		{
+			std::vector<StaticMeshPtr> meshes(source.NumMeshes());
+			for (uint32_t mesh_index = 0; mesh_index < source.NumMeshes(); ++ mesh_index)
+			{
+				auto const& src_mesh = checked_cast<StaticMesh&>(*source.Mesh(mesh_index));
+
+				meshes[mesh_index] = CreateMeshFactoryFunc(src_mesh.Name());
+				auto& mesh = *meshes[mesh_index];
+
+				mesh.MaterialID(src_mesh.MaterialID());
+				mesh.NumLods(src_mesh.NumLods());
+				mesh.PosBound(src_mesh.PosBound());
+				mesh.TexcoordBound(src_mesh.TexcoordBound());
+
+				for (uint32_t lod = 0; lod < src_mesh.NumLods(); ++ lod)
+				{
+					auto const & src_rl = src_mesh.GetRenderLayout(lod);
+
+					for (uint32_t ve_index = 0; ve_index < src_rl.NumVertexStreams(); ++ ve_index)
 					{
-						effect_attrs_ |= EA_AlphaTest;
+						mesh.AddVertexStream(lod, src_rl.GetVertexStream(ve_index), src_rl.VertexStreamFormat(ve_index)[0]);
+					}
+					mesh.AddIndexStream(lod, src_rl.GetIndexStream(), src_rl.IndexStreamFormat());
+
+					mesh.NumVertices(lod, src_mesh.NumVertices(lod));
+					mesh.NumIndices(lod, src_mesh.NumIndices(lod));
+					mesh.StartVertexLocation(lod, src_mesh.StartVertexLocation(lod));
+					mesh.StartIndexLocation(lod, src_mesh.StartIndexLocation(lod));
+				}
+			}
+
+			this->AssignMeshes(meshes.begin(), meshes.end());
+		}
+
+		std::vector<SceneNode const *> source_nodes;
+		std::vector<SceneNodePtr> new_nodes;
+		source.RootNode()->Traverse([this, &source, &source_nodes, &new_nodes](SceneNode& node)
+			{
+				source_nodes.push_back(&node);
+
+				SceneNodePtr new_node;
+				if (new_nodes.empty())
+				{
+					new_node = root_node_;
+				}
+				else
+				{
+					new_node = MakeSharedPtr<SceneNode>(node.Name(), node.Attrib());
+
+					for (size_t j = 0; j < source_nodes.size() - 1; ++ j)
+					{
+						if (node.Parent() == source_nodes[j])
+						{
+							new_nodes[j]->AddChild(new_node);
+						}
+					}
+				}
+				new_nodes.push_back(new_node);
+
+				for (uint32_t i = 0; i < node.NumComponents(); ++ i)
+				{
+					auto& component = *node.ComponentByIndex(i);
+					if (component.IsOfType<RenderableComponent>())
+					{
+						auto* renderable = &boost::typeindex::runtime_cast<RenderableComponent&>(component).BoundRenderable();
+						for (uint32_t mesh_index = 0; mesh_index < source.NumMeshes(); ++mesh_index)
+						{
+							if (renderable == source.Mesh(mesh_index).get())
+							{
+								new_node->AddComponent(MakeSharedPtr<RenderableComponent>(this->Mesh(mesh_index)));
+								break;
+							}
+						}
 					}
 					else
 					{
-						effect_attrs_ |= EA_TransparencyBack;
-						effect_attrs_ |= EA_TransparencyFront;
+						new_node->AddComponent(component.Clone());
 					}
+				}
+				new_node->TransformToParent(node.TransformToParent());
+
+				return true;
+			});
+
+		root_node_->UpdatePosBoundSubtree();
+	}
+
+
+	StaticMesh::StaticMesh(std::wstring_view name)
+		: Renderable(name),
+			hw_res_ready_(false)
+	{
+	}
+	
+	void StaticMesh::BuildMeshInfo(RenderModel const & model)
+	{
+		this->DoBuildMeshInfo(model);
+		this->UpdateBoundBox();
+
+		hw_res_ready_ = true;
+	}
+
+	void StaticMesh::NumLods(uint32_t lods)
+	{
+		Renderable::NumLods(lods);
+
+		for (auto& rl : rls_)
+		{
+			if (Context::Instance().RenderFactoryValid())
+			{
+				auto& rf = Context::Instance().RenderFactoryInstance();
+				rl = rf.MakeRenderLayout();
+			}
+			else
+			{
+				rl = MakeSharedPtr<RenderLayout>();
+			}
+			rl->TopologyType(RenderLayout::TT_TriangleList);
+		}
+	}
+
+	void StaticMesh::DoBuildMeshInfo(RenderModel const & model)
+	{
+		bool is_skinned = false;
+		for (uint32_t i = 0; !is_skinned && (i < rls_[0]->NumVertexStreams()); ++i)
+		{
+			auto const& vertex_stream_fmt = rls_[0]->VertexStreamFormat(i);
+			for (auto const& vertex_elem : vertex_stream_fmt)
+			{
+				if ((vertex_elem.usage == VEU_BlendIndex) || (vertex_elem.usage == VEU_BlendWeight))
+				{
+					is_skinned = true;
+					break;
 				}
 			}
 		}
 
-		if (!(effect_attrs_ & EA_AlphaTest) && (mtl_->opacity < 1))
-		{
-			effect_attrs_ |= EA_TransparencyBack;
-			effect_attrs_ |= EA_TransparencyFront;
-		}
-		if ((mtl_->emit.x() > 0) || (mtl_->emit.y() > 0) || (mtl_->emit.z() > 0) || emit_tl_
-			|| (effect_attrs_ & EA_TransparencyBack) || (effect_attrs_ & EA_TransparencyFront)
-			|| (effect_attrs_ & EA_Reflection))
-		{
-			effect_attrs_ |= EA_SpecialShading;
-		}
-	}
-
-	std::wstring const & StaticMesh::Name() const
-	{
-		return name_;
-	}
-
-	void StaticMesh::OnRenderBegin()
-	{
-		if (diffuse_tl_ && !diffuse_tex_)
-		{
-			diffuse_tex_ = diffuse_tl_();
-		}
-		if (specular_tl_ && !specular_tex_)
-		{
-			specular_tex_ = specular_tl_();
-		}
-		if (shininess_tl_ && !shininess_tex_)
-		{
-			shininess_tex_ = shininess_tl_();
-		}
-		if (normal_tl_ && !normal_tex_)
-		{
-			normal_tex_ = normal_tl_();
-		}
-		if (height_tl_ && !height_tex_)
-		{
-			height_tex_ = height_tl_();
-		}
-		if (emit_tl_ && !emit_tex_)
-		{
-			emit_tex_ = emit_tl_();
-		}
-
-		Renderable::OnRenderBegin();
-	}
-
-	AABBox const & StaticMesh::PosBound() const
-	{
-		return pos_aabb_;
+		this->IsSkinned(is_skinned);
+		this->Material(model.GetMaterial(this->MaterialID()));
 	}
 
 	void StaticMesh::PosBound(AABBox const & aabb)
@@ -614,125 +594,184 @@ namespace KlayGE
 		pos_aabb_ = aabb;
 	}
 
-	AABBox const & StaticMesh::TexcoordBound() const
-	{
-		return tc_aabb_;
-	}
-
 	void StaticMesh::TexcoordBound(AABBox const & aabb)
 	{
 		tc_aabb_ = aabb;
 	}
 
-	void StaticMesh::AddVertexStream(void const * buf, uint32_t size, vertex_element const & ve, uint32_t access_hint)
+	void StaticMesh::AddVertexStream(uint32_t lod, void const * buf, uint32_t size, VertexElement const & ve, uint32_t access_hint)
 	{
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		ElementInitData init_data;
-		init_data.data = buf;
-		init_data.row_pitch = size;
-		init_data.slice_pitch = 0;
-		GraphicsBufferPtr vb = rf.MakeVertexBuffer(BU_Static, access_hint, &init_data);
-		this->AddVertexStream(vb, ve);
+		GraphicsBufferPtr vb = rf.MakeVertexBuffer(BU_Static, access_hint, size, buf);
+		this->AddVertexStream(lod, vb, ve);
 	}
 
-	void StaticMesh::AddVertexStream(GraphicsBufferPtr const & buffer, vertex_element const & ve)
+	void StaticMesh::AddVertexStream(uint32_t lod, GraphicsBufferPtr const & buffer, VertexElement const & ve)
 	{
-		rl_->BindVertexStream(buffer, make_tuple(ve));
+		rls_[lod]->BindVertexStream(buffer, ve);
 	}
 
-	void StaticMesh::AddIndexStream(void const * buf, uint32_t size, ElementFormat format, uint32_t access_hint)
+	void StaticMesh::AddIndexStream(uint32_t lod, void const * buf, uint32_t size, ElementFormat format, uint32_t access_hint)
 	{
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
-		ElementInitData init_data;
-		init_data.data = buf;
-		init_data.row_pitch = size;
-		init_data.slice_pitch = 0;
-		GraphicsBufferPtr ib = rf.MakeIndexBuffer(BU_Static, access_hint, &init_data);
-		this->AddIndexStream(ib, format);
+		GraphicsBufferPtr ib = rf.MakeIndexBuffer(BU_Static, access_hint, size, buf);
+		this->AddIndexStream(lod, ib, format);
 	}
 
-	void StaticMesh::AddIndexStream(GraphicsBufferPtr const & index_stream, ElementFormat format)
+	void StaticMesh::AddIndexStream(uint32_t lod, GraphicsBufferPtr const & index_stream, ElementFormat format)
 	{
-		rl_->BindIndexStream(index_stream, format);
+		rls_[lod]->BindIndexStream(index_stream, format);
 	}
 
 
-	std::pair<std::pair<Quaternion, Quaternion>, float> KeyFrames::Frame(float frame) const
+	std::tuple<Quaternion, Quaternion, float> KeyFrameSet::Frame(float frame) const
 	{
-		frame = std::fmod(frame, static_cast<float>(frame_id.back() + 1));
+		std::tuple<Quaternion, Quaternion, float> ret;
+		if (frame_id.size() == 1)
+		{
+			ret = std::make_tuple(bind_real[0], bind_dual[0], bind_scale[0]);
+		}
+		else
+		{
+			frame = std::fmod(frame, static_cast<float>(frame_id.back() + 1));
 
-		std::vector<uint32_t>::const_iterator iter = std::upper_bound(frame_id.begin(), frame_id.end(), frame);
-		int index = static_cast<int>(iter - frame_id.begin());
+			auto iter = std::upper_bound(frame_id.begin(), frame_id.end(), frame);
+			int index = static_cast<int>(iter - frame_id.begin());
 
-		int index0 = index - 1;
-		int index1 = index % frame_id.size();
-		int frame0 = frame_id[index0];
-		int frame1 = frame_id[index1];
-		float factor = (frame - frame0) / (frame1 - frame0);
-		std::pair<std::pair<Quaternion, Quaternion>, float> ret;
-		ret.first = MathLib::sclerp(bind_real[index0], bind_dual[index0], bind_real[index1], bind_dual[index1], factor);
-		ret.second = MathLib::lerp(bind_scale[index0], bind_scale[index1], factor);
+			int index0 = index - 1;
+			int index1 = index % frame_id.size();
+			int frame0 = frame_id[index0];
+			int frame1 = frame_id[index1];
+			float factor = (frame - frame0) / (frame1 - frame0);
+			auto dq = MathLib::sclerp(bind_real[index0], bind_dual[index0], bind_real[index1], bind_dual[index1], factor);
+			ret = std::make_tuple(dq.first, dq.second, MathLib::lerp(bind_scale[index0], bind_scale[index1], factor));
+		}
 		return ret;
 	}
 
-	AABBox AABBKeyFrames::Frame(float frame) const
+	AABBox AABBKeyFrameSet::Frame(float frame) const
 	{
-		frame = std::fmod(frame, static_cast<float>(frame_id.back() + 1));
+		if (frame_id.size() == 1)
+		{
+			return bb[0];
+		}
+		else
+		{
+			frame = std::fmod(frame, static_cast<float>(frame_id.back() + 1));
 
-		std::vector<uint32_t>::const_iterator iter = std::upper_bound(frame_id.begin(), frame_id.end(), frame);
-		int index = static_cast<int>(iter - frame_id.begin());
+			auto iter = std::upper_bound(frame_id.begin(), frame_id.end(), frame);
+			int index = static_cast<int>(iter - frame_id.begin());
 
-		int index0 = index - 1;
-		int index1 = index % frame_id.size();
-		int frame0 = frame_id[index0];
-		int frame1 = frame_id[index1];
-		float factor = (frame - frame0) / (frame1 - frame0);
-		return AABBox(MathLib::lerp(bb[index0].Min(), bb[index1].Min(), factor),
-			MathLib::lerp(bb[index0].Max(), bb[index1].Max(), factor));
+			int index0 = index - 1;
+			int index1 = index % frame_id.size();
+			int frame0 = frame_id[index0];
+			int frame1 = frame_id[index1];
+			float factor = (frame - frame0) / (frame1 - frame0);
+			return AABBox(MathLib::lerp(bb[index0].Min(), bb[index1].Min(), factor),
+				MathLib::lerp(bb[index0].Max(), bb[index1].Max(), factor));
+		}
 	}
 
 
-	SkinnedModel::SkinnedModel(std::wstring const & name)
-		: RenderModel(name),
-			last_frame_(-1),
+	SceneComponentPtr JointComponent::Clone() const
+	{
+		auto ret = MakeSharedPtr<JointComponent>();
+
+		ret->bind_real_ = bind_real_;
+		ret->bind_dual_ = bind_dual_;
+		ret->bind_scale_ = bind_scale_;
+
+		ret->inverse_origin_real_ = inverse_origin_real_;
+		ret->inverse_origin_dual_ = inverse_origin_dual_;
+		ret->inverse_origin_scale_ = inverse_origin_scale_;
+
+		return ret;
+	}
+
+	void JointComponent::BindParams(Quaternion const& real, Quaternion const& dual, float scale)
+	{
+		bind_real_ = real;
+		bind_dual_ = dual;
+		bind_scale_ = scale;
+	}
+
+	void JointComponent::InverseOriginParams(Quaternion const& real, Quaternion const& dual, float scale)
+	{
+		inverse_origin_real_ = real;
+		inverse_origin_dual_ = dual;
+		inverse_origin_scale_ = scale;
+	}
+
+	void JointComponent::InitInverseOriginParams()
+	{
+		std::tie(inverse_origin_real_, inverse_origin_dual_) = MathLib::inverse(bind_real_, bind_dual_);
+		inverse_origin_scale_ = 1 / bind_scale_;
+	}
+
+
+	SkinnedModel::SkinnedModel(SceneNodePtr const & root_node)
+		: RenderModel(root_node),
+			last_frame_(0),
 			num_frames_(0), frame_rate_(0)
 	{
 	}
-	
+
+	SkinnedModel::SkinnedModel(std::wstring_view name, uint32_t node_attrib)
+		: SkinnedModel(MakeSharedPtr<SceneNode>(name, node_attrib))
+	{
+	}
+
 	void SkinnedModel::BuildBones(float frame)
 	{
 		for (size_t i = 0; i < joints_.size(); ++ i)
 		{
-			Joint& joint = joints_[i];
-			KeyFrames const & kf = (*key_frames_)[i];
+			auto& joint = *joints_[i];
+			KeyFrameSet const & kf = (*key_frame_sets_)[i];
 
-			std::pair<std::pair<Quaternion, Quaternion>, float> key_dq = kf.Frame(frame);
+			std::tuple<Quaternion, Quaternion, float> key_dq = kf.Frame(frame);
 
-			if (joint.parent != -1)
+			bool is_root = false;
+			auto* parent_node = joint.BoundSceneNode()->Parent();
+			if (parent_node)
 			{
-				Joint const & parent(joints_[joint.parent]);
-
-				if (MathLib::dot(key_dq.first.first, parent.bind_real) < 0)
+				auto* parent_joint = parent_node->FirstComponentOfType<JointComponent>();
+				if (parent_joint == nullptr)
 				{
-					key_dq.first.first = -key_dq.first.first;
-					key_dq.first.second = -key_dq.first.second;
+					is_root = true;
+				}
+			}
+
+			if (is_root)
+			{
+				joint.BindParams(std::get<0>(key_dq), std::get<1>(key_dq), std::get<2>(key_dq));
+			}
+			else
+			{
+				auto const& parent = *parent_node->FirstComponentOfType<JointComponent>();
+
+				if (MathLib::dot(std::get<0>(key_dq), parent.BindReal()) < 0)
+				{
+					std::get<0>(key_dq) = -std::get<0>(key_dq);
+					std::get<1>(key_dq) = -std::get<1>(key_dq);
 				}
 
-				if ((key_dq.second > 0) && (parent.bind_scale > 0))
+				if ((MathLib::SignBit(std::get<2>(key_dq)) > 0) && (MathLib::SignBit(parent.BindScale()) > 0))
 				{
-					joint.bind_real = MathLib::mul_real(key_dq.first.first, parent.bind_real);
-					joint.bind_dual = MathLib::mul_dual(key_dq.first.first, key_dq.first.second * parent.bind_scale, parent.bind_real, parent.bind_dual);
-					joint.bind_scale = key_dq.second * parent.bind_scale;
+					joint.BindParams(MathLib::mul_real(std::get<0>(key_dq), parent.BindReal()),
+						MathLib::mul_dual(
+							std::get<0>(key_dq), std::get<1>(key_dq) * parent.BindScale(), parent.BindReal(), parent.BindDual()),
+						std::get<2>(key_dq) * parent.BindScale());
 				}
 				else
 				{
-					float4x4 tmp_mat = MathLib::scaling(MathLib::abs(key_dq.second), MathLib::abs(key_dq.second), key_dq.second)
-						* MathLib::to_matrix(key_dq.first.first)
-						* MathLib::translation(MathLib::udq_to_trans(key_dq.first.first, key_dq.first.second))
-						* MathLib::scaling(MathLib::abs(parent.bind_scale), MathLib::abs(parent.bind_scale), parent.bind_scale)
-						* MathLib::to_matrix(parent.bind_real)
-						* MathLib::translation(MathLib::udq_to_trans(parent.bind_real, parent.bind_dual));
+					float const key_scale = std::get<2>(key_dq);
+					float4x4 tmp_mat = MathLib::scaling(MathLib::abs(key_scale), MathLib::abs(key_scale), key_scale)
+						* MathLib::to_matrix(std::get<0>(key_dq))
+						* MathLib::translation(MathLib::udq_to_trans(std::get<0>(key_dq), std::get<1>(key_dq)))
+						* MathLib::scaling(MathLib::abs(parent.BindScale()), MathLib::abs(parent.BindScale()), parent.BindScale())
+						* MathLib::to_matrix(parent.BindReal())
+						* MathLib::translation(MathLib::udq_to_trans(parent.BindReal(), parent.BindDual()));
 
 					float flip = 1;
 					if (MathLib::dot(MathLib::cross(float3(tmp_mat(0, 0), tmp_mat(0, 1), tmp_mat(0, 2)),
@@ -751,16 +790,8 @@ namespace KlayGE
 					float3 trans;
 					MathLib::decompose(scale, rot, trans, tmp_mat);
 
-					joint.bind_real = rot;
-					joint.bind_dual = MathLib::quat_trans_to_udq(rot, trans);
-					joint.bind_scale = flip * scale.x();
+					joint.BindParams(rot, MathLib::quat_trans_to_udq(rot, trans), flip * scale.x());
 				}
-			}
-			else
-			{
-				joint.bind_real = key_dq.first.first;
-				joint.bind_dual = key_dq.first.second;
-				joint.bind_scale = key_dq.second;
 			}
 		}
 
@@ -771,20 +802,20 @@ namespace KlayGE
 	{
 		bind_reals_.resize(joints_.size());
 		bind_duals_.resize(joints_.size());
-		for (size_t i = 0; i < joints_.size(); ++ i)
+		for (size_t i = 0; i < joints_.size(); ++i)
 		{
-			Joint const & joint = joints_[i];
+			auto const& joint = *joints_[i];
 
 			Quaternion bind_real, bind_dual;
 			float bind_scale;
-			if ((joint.inverse_origin_scale > 0) && (joint.bind_scale > 0))
+			if ((MathLib::SignBit(joint.InverseOriginScale()) > 0) && (MathLib::SignBit(joint.BindScale()) > 0))
 			{
-				bind_real = MathLib::mul_real(joint.inverse_origin_real, joint.bind_real);
-				bind_dual = MathLib::mul_dual(joint.inverse_origin_real, joint.inverse_origin_dual,
-					joint.bind_real, joint.bind_dual);
-				bind_scale = joint.inverse_origin_scale * joint.bind_scale;
+				bind_real = MathLib::mul_real(joint.InverseOriginReal(), joint.BindReal());
+				bind_dual = MathLib::mul_dual(joint.InverseOriginReal(), joint.InverseOriginDual(),
+					joint.BindReal(), joint.BindDual());
+				bind_scale = joint.InverseOriginScale() * joint.BindScale();
 
-				if (bind_real.w() < 0)
+				if (MathLib::SignBit(bind_real.w()) < 0)
 				{
 					bind_real = -bind_real;
 					bind_dual = -bind_dual;
@@ -792,12 +823,12 @@ namespace KlayGE
 			}
 			else
 			{
-				float4x4 tmp_mat = MathLib::scaling(MathLib::abs(joint.inverse_origin_scale), MathLib::abs(joint.inverse_origin_scale), joint.inverse_origin_scale)
-					* MathLib::to_matrix(joint.inverse_origin_real)
-					* MathLib::translation(MathLib::udq_to_trans(joint.inverse_origin_real, joint.inverse_origin_dual))
-					* MathLib::scaling(MathLib::abs(joint.bind_scale), MathLib::abs(joint.bind_scale), joint.bind_scale)
-					* MathLib::to_matrix(joint.bind_real)
-					* MathLib::translation(MathLib::udq_to_trans(joint.bind_real, joint.bind_dual));
+				float4x4 tmp_mat = MathLib::scaling(MathLib::abs(joint.InverseOriginScale()), MathLib::abs(joint.InverseOriginScale()), joint.InverseOriginScale())
+					* MathLib::to_matrix(joint.InverseOriginReal())
+					* MathLib::translation(MathLib::udq_to_trans(joint.InverseOriginReal(), joint.InverseOriginDual()))
+					* MathLib::scaling(MathLib::abs(joint.BindScale()), MathLib::abs(joint.BindScale()), joint.BindScale())
+					* MathLib::to_matrix(joint.BindReal())
+					* MathLib::translation(MathLib::udq_to_trans(joint.BindReal(), joint.BindDual()));
 
 				float flip = 1;
 				if (MathLib::dot(MathLib::cross(float3(tmp_mat(0, 0), tmp_mat(0, 1), tmp_mat(0, 2)),
@@ -820,7 +851,7 @@ namespace KlayGE
 				bind_dual = MathLib::quat_trans_to_udq(rot, trans);
 				bind_scale = scale.x();
 
-				if (flip * bind_real.w() < 0)
+				if (flip * MathLib::SignBit(bind_real.w()) < 0)
 				{
 					bind_real = -bind_real;
 					bind_dual = -bind_dual;
@@ -830,6 +861,8 @@ namespace KlayGE
 			bind_reals_[i] = float4(bind_real.x(), bind_real.y(), bind_real.z(), bind_real.w()) * bind_scale;
 			bind_duals_[i] = float4(bind_dual.x(), bind_dual.y(), bind_dual.z(), bind_dual.w());
 		}
+
+		this->SetToEffect();
 	}
 
 	float SkinnedModel::GetFrame() const
@@ -859,39 +892,57 @@ namespace KlayGE
 			bind_reals_[i] = float4(0, 0, 0, 1);
 			bind_duals_[i] = float4(0, 0, 0, 0);
 		}
+
+		this->SetToEffect();
+	}
+
+	void SkinnedModel::SetToEffect()
+	{
+		for (auto& renderable : meshes_)
+		{
+			auto& effect = renderable->GetRenderEffect();
+			if (effect)
+			{
+				auto* joint_reals_ep = effect->ParameterByName("joint_reals");
+				if (joint_reals_ep)
+				{
+					*joint_reals_ep = bind_reals_;
+					*(effect->ParameterByName("joint_duals")) = bind_duals_;
+				}
+			}
+		}
 	}
 
 	AABBox SkinnedModel::FramePosBound(uint32_t frame) const
 	{
 		AABBox pos_aabb(float3(0, 0, 0), float3(0, 0, 0));
-		typedef KLAYGE_DECLTYPE(subrenderables_) MeshesType;
-		KLAYGE_FOREACH(MeshesType::const_reference mesh, subrenderables_)
-		{
-			pos_aabb |= checked_pointer_cast<SkinnedMesh>(mesh)->FramePosBound(frame);
-		}
+		this->ForEachMesh([&pos_aabb, frame](Renderable& mesh)
+			{
+				pos_aabb |= checked_cast<SkinnedMesh&>(mesh).FramePosBound(frame);
+			});
 
 		return pos_aabb;
 	}
 
-	void SkinnedModel::AttachActions(shared_ptr<AnimationActionsType> const & actions)
+	void SkinnedModel::AttachAnimations(std::shared_ptr<std::vector<Animation>> const & animations)
 	{
-		actions_ = actions;
+		animations_ = animations;
 	}
 	
-	uint32_t SkinnedModel::NumActions() const
+	uint32_t SkinnedModel::NumAnimations() const
 	{
-		return actions_ ? static_cast<uint32_t>(actions_->size()) : 1;
+		return animations_ ? static_cast<uint32_t>(animations_->size()) : 1;
 	}
 
-	void SkinnedModel::GetAction(uint32_t index, std::string& name, uint32_t& start_frame, uint32_t& end_frame)
+	void SkinnedModel::GetAnimation(uint32_t index, std::string& name, uint32_t& start_frame, uint32_t& end_frame)
 	{
-		if (actions_)
+		if (animations_)
 		{
-			BOOST_ASSERT(index < actions_->size());
+			BOOST_ASSERT(index < animations_->size());
 
-			name = (*actions_)[index].name;
-			start_frame = (*actions_)[index].start_frame;
-			end_frame = (*actions_)[index].end_frame;
+			name = (*animations_)[index].name;
+			start_frame = (*animations_)[index].start_frame;
+			end_frame = (*animations_)[index].end_frame;
 		}
 		else
 		{
@@ -903,9 +954,72 @@ namespace KlayGE
 		}
 	}
 
+	void SkinnedModel::CloneDataFrom(RenderModel const & source,
+		std::function<StaticMeshPtr(std::wstring_view)> const & CreateMeshFactoryFunc)
+	{
+		RenderModel::CloneDataFrom(source, CreateMeshFactoryFunc);
 
-	SkinnedMesh::SkinnedMesh(RenderModelPtr const & model, std::wstring const & name)
-		: StaticMesh(model, name)
+		if (source.IsSkinned())
+		{
+			auto const& src_skinned_model = checked_cast<SkinnedModel const&>(source);
+			auto& skinned_model = checked_cast<SkinnedModel&>(*this);
+
+			std::vector<JointComponentPtr> joints(src_skinned_model.NumJoints());
+			for (uint32_t i = 0; i < src_skinned_model.NumJoints(); ++ i)
+			{
+				joints[i] = checked_pointer_cast<JointComponent>(src_skinned_model.GetJoint(i)->Clone());
+			}
+			skinned_model.AssignJoints(joints.begin(), joints.end());
+			skinned_model.AttachKeyFrameSets(src_skinned_model.GetKeyFrameSets());
+
+			auto& root_node = *skinned_model.RootNode();
+			for (uint32_t i = 0; i < root_node.NumComponents(); ++i)
+			{
+				auto& component = *root_node.ComponentByIndex(i);
+				if (component.IsOfType<JointComponent>())
+				{
+					root_node.ReplaceComponent(i, joints[0]);
+					break;
+				}
+			}
+			root_node.Traverse([&joints, &src_skinned_model](SceneNode& node)
+				{
+					for (uint32_t i = 0; i < node.NumComponents(); ++i)
+					{
+						auto& component = *node.ComponentByIndex(i);
+						if (component.IsOfType<JointComponent>())
+						{
+							for (uint32_t j = 0; j < src_skinned_model.NumJoints(); ++j)
+							{
+								if (src_skinned_model.GetJoint(j)->BoundSceneNode()->Name() == node.Name())
+								{
+									node.ReplaceComponent(i, joints[j]);
+									break;
+								}
+							}
+						}
+					}
+
+					return true;
+				});
+
+			skinned_model.NumFrames(src_skinned_model.NumFrames());
+			skinned_model.FrameRate(src_skinned_model.FrameRate());
+
+			for (size_t mesh_index = 0; mesh_index < src_skinned_model.NumMeshes(); ++ mesh_index)
+			{
+				auto const& src_skinned_mesh = checked_cast<SkinnedMesh const&>(*src_skinned_model.Mesh(mesh_index));
+				auto& skinned_mesh = checked_cast<SkinnedMesh&>(*skinned_model.Mesh(mesh_index));
+				skinned_mesh.AttachFramePosBounds(src_skinned_mesh.GetFramePosBounds());
+			}
+
+			skinned_model.AttachAnimations(src_skinned_model.GetAnimations());
+		}
+	}
+
+
+	SkinnedMesh::SkinnedMesh(std::wstring_view name)
+		: StaticMesh(name)
 	{
 	}
 
@@ -915,173 +1029,155 @@ namespace KlayGE
 		return frame_pos_aabbs_->Frame(static_cast<float>(frame));
 	}
 	
-	void SkinnedMesh::AttachFramePosBounds(shared_ptr<AABBKeyFrames> const & frame_pos_aabbs)
+	void SkinnedMesh::AttachFramePosBounds(std::shared_ptr<AABBKeyFrameSet> const & frame_pos_aabbs)
 	{
 		frame_pos_aabbs_ = frame_pos_aabbs;
 	}
 
 
-	std::string const jit_ext_name = ".model_bin";
-
-	void ModelJIT(std::string const & meshml_name)
+	RenderModelPtr SyncLoadModel(std::string_view model_name, uint32_t access_hint, uint32_t node_attrib,
+		std::function<void(RenderModel&)> OnFinishLoading,
+		std::function<RenderModelPtr(std::wstring_view, uint32_t)> CreateModelFactoryFunc,
+		std::function<StaticMeshPtr(std::wstring_view)> CreateMeshFactoryFunc)
 	{
-		std::string::size_type const pkt_offset(meshml_name.find("//"));
-		std::string folder_name;
-		std::string path_name;
-		if (pkt_offset != std::string::npos)
+		BOOST_ASSERT(CreateModelFactoryFunc);
+		BOOST_ASSERT(CreateMeshFactoryFunc);
+
+		return ResLoader::Instance().SyncQueryT<RenderModel>(MakeSharedPtr<RenderModelLoadingDesc>(model_name,
+			access_hint, node_attrib, OnFinishLoading, CreateModelFactoryFunc, CreateMeshFactoryFunc));
+	}
+
+	RenderModelPtr ASyncLoadModel(std::string_view model_name, uint32_t access_hint, uint32_t node_attrib,
+		std::function<void(RenderModel&)> OnFinishLoading,
+		std::function<RenderModelPtr(std::wstring_view, uint32_t)> CreateModelFactoryFunc,
+		std::function<StaticMeshPtr(std::wstring_view)> CreateMeshFactoryFunc)
+	{
+		BOOST_ASSERT(CreateModelFactoryFunc);
+		BOOST_ASSERT(CreateMeshFactoryFunc);
+
+		// Hacky code. During model creation, shaders are created, too. On devices without multirhead resource creating support, shaeder
+		// creation will failed. It can be removed once we have async effect loading.
+		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+		RenderDeviceCaps const & caps = rf.RenderEngineInstance().DeviceCaps();
+		if (caps.multithread_res_creating_support)
 		{
-			std::string pkt_name = meshml_name.substr(0, pkt_offset);
-			std::string::size_type const password_offset = pkt_name.find("|");
-			if (password_offset != std::string::npos)
-			{
-				pkt_name = pkt_name.substr(0, password_offset - 1);
-			}
-
-			std::string::size_type offset = pkt_name.rfind("/");
-			if (offset != std::string::npos)
-			{
-				folder_name = pkt_name.substr(0, offset + 1);
-			}
-
-			std::string const file_name = meshml_name.substr(pkt_offset + 2);
-			path_name = folder_name + file_name;
+			return ResLoader::Instance().ASyncQueryT<RenderModel>(MakeSharedPtr<RenderModelLoadingDesc>(model_name,
+				access_hint, node_attrib, OnFinishLoading, CreateModelFactoryFunc, CreateMeshFactoryFunc));
 		}
 		else
 		{
-			std::string::size_type offset = meshml_name.rfind("/");
-			if (offset != std::string::npos)
-			{
-				folder_name = meshml_name.substr(0, offset + 1);
-			}
-
-			path_name = meshml_name;
+			return SyncLoadModel(model_name, access_hint, node_attrib, OnFinishLoading, CreateModelFactoryFunc, CreateMeshFactoryFunc);
 		}
+	}
 
-		bool jit = false;
-		if (ResLoader::Instance().Locate(path_name + jit_ext_name).empty())
+	RenderModelPtr LoadSoftwareModel(std::string_view model_name)
+	{
+		char const * JIT_EXT_NAME = ".model_bin";
+
+		std::string runtime_name(model_name);
+		if (std::filesystem::path(runtime_name).extension() != JIT_EXT_NAME)
 		{
-			jit = true;
-		}
-		else
-		{
-			ResIdentifierPtr lzma_file = ResLoader::Instance().Open(path_name + jit_ext_name);
-			uint32_t fourcc;
-			lzma_file->read(&fourcc, sizeof(fourcc));
-			fourcc = LE2Native(fourcc);
-			uint32_t ver;
-			lzma_file->read(&ver, sizeof(ver));
-			ver = LE2Native(ver);
-			if ((fourcc != MakeFourCC<'K', 'L', 'M', ' '>::value) || (ver != MODEL_BIN_VERSION))
+			std::string const metadata_name = runtime_name + ".kmeta";
+			runtime_name += JIT_EXT_NAME;
+
+			bool jit = false;
+			if (ResLoader::Instance().Locate(runtime_name).empty())
 			{
 				jit = true;
 			}
 			else
 			{
-				ResIdentifierPtr file = ResLoader::Instance().Open(meshml_name);
-				if (file)
+				ResIdentifierPtr runtime_file = ResLoader::Instance().Open(runtime_name);
+				uint32_t fourcc;
+				runtime_file->read(&fourcc, sizeof(fourcc));
+				fourcc = LE2Native(fourcc);
+				uint32_t ver;
+				runtime_file->read(&ver, sizeof(ver));
+				ver = LE2Native(ver);
+				if ((fourcc != MakeFourCC<'K', 'L', 'M', ' '>::value) || (ver != MODEL_BIN_VERSION))
 				{
-					if (lzma_file->Timestamp() < file->Timestamp())
+					jit = true;
+				}
+				else
+				{
+					uint64_t const runtime_file_timestamp = runtime_file->Timestamp();
+					uint64_t const input_file_timestamp = ResLoader::Instance().Timestamp(model_name);
+					uint64_t const metadata_timestamp = ResLoader::Instance().Timestamp(metadata_name);
+					if (((input_file_timestamp > 0) && (runtime_file_timestamp < input_file_timestamp))
+						|| ((metadata_timestamp > 0) && (runtime_file_timestamp < metadata_timestamp)))
 					{
 						jit = true;
 					}
 				}
 			}
-		}
 
+			if (jit)
+			{
 #if KLAYGE_IS_DEV_PLATFORM
-		if (jit)
-		{
-			std::string meshmljit_name = "MeshMLJIT" KLAYGE_DBG_SUFFIX;
-#ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
-			meshmljit_name += ".exe";
-#endif
-			meshmljit_name = ResLoader::Instance().Locate(meshmljit_name);
-			bool failed = false;
-			if (!meshmljit_name.empty())
-			{
-#ifndef KLAYGE_PLATFORM_WINDOWS_DESKTOP
-				meshmljit_name = "./" + meshmljit_name;
-#endif
-				if (system((meshmljit_name + " -I \"" + meshml_name + "\" -T \"" + folder_name + "\" -q").c_str()) != 0)
-				{
-					failed = true;
-				}
-			}
-			else
-			{
-				failed = true;
-			}
+				RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+				RenderDeviceCaps const & caps = rf.RenderEngineInstance().DeviceCaps();
 
-			if (failed)
-			{
-				LogError("MeshMLJIT failed. Forgot to build Tools?");
-			}
-		}
+				return Context::Instance().DevHelperInstance().ConvertModel(model_name, metadata_name, runtime_name, &caps);
 #else
-		BOOST_ASSERT(!jit);
+				LogError() << "Could NOT locate " << runtime_name << std::endl;
+				return RenderModelPtr();
 #endif
-	}
-
-	void LoadModel(std::string const & meshml_name, std::vector<RenderMaterialPtr>& mtls,
-		std::vector<vertex_element>& merged_ves, char& all_is_index_16_bit,
-		std::vector<std::vector<uint8_t> >& merged_buff, std::vector<uint8_t>& merged_indices,
-		std::vector<std::string>& mesh_names, std::vector<int32_t>& mtl_ids,
-		std::vector<AABBox>& pos_bbs, std::vector<AABBox>& tc_bbs,
-		std::vector<uint32_t>& mesh_num_vertices, std::vector<uint32_t>& mesh_base_vertices,
-		std::vector<uint32_t>& mesh_num_triangles, std::vector<uint32_t>& mesh_base_triangles,
-		std::vector<Joint>& joints, shared_ptr<AnimationActionsType>& actions,
-		shared_ptr<KeyFramesType>& kfs, uint32_t& num_frames, uint32_t& frame_rate,
-		std::vector<shared_ptr<AABBKeyFrames> >& frame_pos_bbs)
-	{
-		ResIdentifierPtr lzma_file;
-		if (meshml_name.rfind(jit_ext_name) + jit_ext_name.size() == meshml_name.size())
-		{
-			lzma_file = ResLoader::Instance().Open(meshml_name);
+			}
 		}
-		else
-		{
-			std::string full_meshml_name = ResLoader::Instance().Locate(meshml_name);
-			if (full_meshml_name.empty())
-			{
-				full_meshml_name = meshml_name;
-			}
-			std::replace(full_meshml_name.begin(), full_meshml_name.end(), '\\', '/');
-			ModelJIT(full_meshml_name);
 
-			std::string no_packing_name;
-			size_t offset = full_meshml_name.rfind("//");
-			if (offset != std::string::npos)
-			{
-				no_packing_name = full_meshml_name.substr(offset + 2);
-			}
-			else
-			{
-				no_packing_name = full_meshml_name;
-			}
-			lzma_file = ResLoader::Instance().Open(no_packing_name + jit_ext_name);
-		}
+		struct NodeInfo
+		{
+			SceneNodePtr node;
+			std::vector<uint16_t> mesh_indices;
+			int16_t joint_index;
+		};
+
+		std::vector<RenderMaterialPtr> mtls;
+		std::vector<VertexElement> merged_ves;
+		char all_is_index_16_bit;
+		std::vector<std::vector<uint8_t>> merged_buff;
+		std::vector<uint8_t> merged_indices;
+		std::vector<std::string> mesh_names;
+		std::vector<int32_t> mtl_ids;
+		std::vector<uint32_t> mesh_lods;
+		std::vector<AABBox> pos_bbs;
+		std::vector<AABBox> tc_bbs;
+		std::vector<uint32_t> mesh_num_vertices;
+		std::vector<uint32_t> mesh_base_vertices;
+		std::vector<uint32_t> mesh_num_indices;
+		std::vector<uint32_t> mesh_start_indices;
+		std::vector<NodeInfo> nodes;
+		std::vector<JointComponentPtr> joints;
+		std::shared_ptr<std::vector<Animation>> animations;
+		std::shared_ptr<std::vector<KeyFrameSet>> kfs;
+		uint32_t num_frames = 0;
+		uint32_t frame_rate = 0;
+		std::vector<std::shared_ptr<AABBKeyFrameSet>> frame_pos_bbs;
+
+		ResIdentifierPtr runtime_file = ResLoader::Instance().Open(runtime_name);
+
 		uint32_t fourcc;
-		lzma_file->read(&fourcc, sizeof(fourcc));
+		runtime_file->read(&fourcc, sizeof(fourcc));
 		fourcc = LE2Native(fourcc);
 		BOOST_ASSERT((fourcc == MakeFourCC<'K', 'L', 'M', ' '>::value));
 
 		uint32_t ver;
-		lzma_file->read(&ver, sizeof(ver));
+		runtime_file->read(&ver, sizeof(ver));
 		ver = LE2Native(ver);
 		BOOST_ASSERT(MODEL_BIN_VERSION == ver);
 
-		shared_ptr<std::stringstream> ss = MakeSharedPtr<std::stringstream>();
+		std::shared_ptr<std::stringstream> ss = MakeSharedPtr<std::stringstream>();
 
 		uint64_t original_len, len;
-		lzma_file->read(&original_len, sizeof(original_len));
+		runtime_file->read(&original_len, sizeof(original_len));
 		original_len = LE2Native(original_len);
-		lzma_file->read(&len, sizeof(len));
+		runtime_file->read(&len, sizeof(len));
 		len = LE2Native(len);
 
 		LZMACodec lzma;
-		lzma.Decode(*ss, lzma_file, len, original_len);
+		lzma.Decode(*ss, runtime_file, len, original_len);
 
-		ResIdentifierPtr decoded = MakeSharedPtr<ResIdentifier>(lzma_file->ResName(), lzma_file->Timestamp(), ss);
+		ResIdentifierPtr decoded = MakeSharedPtr<ResIdentifier>(runtime_file->ResName(), runtime_file->Timestamp(), ss);
 
 		uint32_t num_mtls;
 		decoded->read(&num_mtls, sizeof(num_mtls));
@@ -1089,15 +1185,18 @@ namespace KlayGE
 		uint32_t num_meshes;
 		decoded->read(&num_meshes, sizeof(num_meshes));
 		num_meshes = LE2Native(num_meshes);
+		uint32_t num_nodes;
+		decoded->read(&num_nodes, sizeof(num_nodes));
+		num_nodes = LE2Native(num_nodes);
 		uint32_t num_joints;
 		decoded->read(&num_joints, sizeof(num_joints));
 		num_joints = LE2Native(num_joints);
 		uint32_t num_kfs;
 		decoded->read(&num_kfs, sizeof(num_kfs));
 		num_kfs = LE2Native(num_kfs);
-		uint32_t num_actions;
-		decoded->read(&num_actions, sizeof(num_actions));
-		num_actions = LE2Native(num_actions);
+		uint32_t num_animations;
+		decoded->read(&num_animations, sizeof(num_animations));
+		num_animations = LE2Native(num_animations);
 
 		mtls.resize(num_mtls);
 		for (uint32_t mtl_index = 0; mtl_index < num_mtls; ++ mtl_index)
@@ -1105,61 +1204,100 @@ namespace KlayGE
 			RenderMaterialPtr mtl = MakeSharedPtr<RenderMaterial>();
 			mtls[mtl_index] = mtl;
 
-			uint8_t rgb[3];
-			float specular_level;
-			decoded->read(&rgb[0], sizeof(uint8_t));
-			decoded->read(&rgb[1], sizeof(uint8_t));
-			decoded->read(&rgb[2], sizeof(uint8_t));
-			mtl->ambient.x() = rgb[0] / 255.0f;
-			mtl->ambient.y() = rgb[1] / 255.0f;
-			mtl->ambient.z() = rgb[2] / 255.0f;
-			decoded->read(&rgb[0], sizeof(uint8_t));
-			decoded->read(&rgb[1], sizeof(uint8_t));
-			decoded->read(&rgb[2], sizeof(uint8_t));
-			mtl->diffuse.x() = rgb[0] / 255.0f;
-			mtl->diffuse.y() = rgb[1] / 255.0f;
-			mtl->diffuse.z() = rgb[2] / 255.0f;
-			decoded->read(&rgb[0], sizeof(uint8_t));
-			decoded->read(&rgb[1], sizeof(uint8_t));
-			decoded->read(&rgb[2], sizeof(uint8_t));
-			decoded->read(&specular_level, sizeof(float));
-			specular_level = LE2Native(specular_level);
-			mtl->specular.x() = rgb[0] / 255.0f * specular_level;
-			mtl->specular.y() = rgb[1] / 255.0f * specular_level;
-			mtl->specular.z() = rgb[2] / 255.0f * specular_level;
-			decoded->read(&rgb[0], sizeof(uint8_t));
-			decoded->read(&rgb[1], sizeof(uint8_t));
-			decoded->read(&rgb[2], sizeof(uint8_t));
-			mtl->emit.x() = rgb[0] / 255.0f;
-			mtl->emit.y() = rgb[1] / 255.0f;
-			mtl->emit.z() = rgb[2] / 255.0f;
+			mtl->Name(ReadShortString(*decoded));
 
-			decoded->read(&mtl->opacity, sizeof(float));
-			mtl->opacity = LE2Native(mtl->opacity);
+			float4 albedo;
+			decoded->read(&albedo, sizeof(albedo));
+			albedo.x() = LE2Native(albedo.x());
+			albedo.y() = LE2Native(albedo.y());
+			albedo.z() = LE2Native(albedo.z());
+			albedo.w() = LE2Native(albedo.w());
+			mtl->Albedo(albedo);
 
-			decoded->read(&mtl->shininess, sizeof(float));
-			mtl->shininess = LE2Native(mtl->shininess);
+			float metalness;
+			decoded->read(&metalness, sizeof(metalness));
+			metalness = LE2Native(metalness);
+			mtl->Metalness(metalness);
 
-			if (Context::Instance().Config().graphics_cfg.gamma)
+			float glossiness;
+			decoded->read(&glossiness, sizeof(glossiness));
+			glossiness = LE2Native(glossiness);
+			mtl->Glossiness(glossiness);
+
+			float3 emissive;
+			decoded->read(&emissive, sizeof(emissive));
+			emissive.x() = LE2Native(emissive.x());
+			emissive.y() = LE2Native(emissive.y());
+			emissive.z() = LE2Native(emissive.z());
+			mtl->Emissive(emissive);
+
+			uint8_t transparent;
+			decoded->read(&transparent, sizeof(transparent));
+			mtl->Transparent(transparent ? true : false);
+
+			uint8_t alpha_test;
+			decoded->read(&alpha_test, sizeof(uint8_t));
+			mtl->AlphaTestThreshold(alpha_test / 255.0f);
+
+			uint8_t sss;
+			decoded->read(&sss, sizeof(sss));
+			mtl->Sss(sss ? true : false);
+
+			uint8_t two_sided;
+			decoded->read(&two_sided, sizeof(two_sided));
+			mtl->TwoSided(two_sided ? true : false);
+
+			for (size_t i = 0; i < RenderMaterial::TS_NumTextureSlots; ++ i)
 			{
-				mtl->ambient.x() = MathLib::srgb_to_linear(mtl->ambient.x());
-				mtl->ambient.y() = MathLib::srgb_to_linear(mtl->ambient.y());
-				mtl->ambient.z() = MathLib::srgb_to_linear(mtl->ambient.z());
-				mtl->diffuse.x() = MathLib::srgb_to_linear(mtl->diffuse.x());
-				mtl->diffuse.y() = MathLib::srgb_to_linear(mtl->diffuse.y());
-				mtl->diffuse.z() = MathLib::srgb_to_linear(mtl->diffuse.z());
+				mtl->TextureName(static_cast<RenderMaterial::TextureSlot>(i), ReadShortString(*decoded));
+			}
+			if (!mtl->TextureName(RenderMaterial::TS_Normal).empty())
+			{
+				float normal_scale;
+				decoded->read(&normal_scale, sizeof(normal_scale));
+				mtl->NormalScale(LE2Native(normal_scale));
+			}
+			if (!mtl->TextureName(RenderMaterial::TS_Height).empty())
+			{
+				float height_offset;
+				decoded->read(&height_offset, sizeof(height_offset));
+				mtl->HeightOffset(LE2Native(height_offset));
+				float height_scale;
+				decoded->read(&height_scale, sizeof(height_scale));
+				mtl->HeightScale(LE2Native(height_scale));
+			}
+			if (!mtl->TextureName(RenderMaterial::TS_Occlusion).empty())
+			{
+				float occlusion_strength;
+				decoded->read(&occlusion_strength, sizeof(occlusion_strength));
+				mtl->OcclusionStrength(LE2Native(occlusion_strength));
 			}
 
-			uint32_t num_texs;
-			decoded->read(&num_texs, sizeof(num_texs));
-			num_texs = LE2Native(num_texs);
-
-			for (uint32_t tex_index = 0; tex_index < num_texs; ++ tex_index)
+			uint8_t detail_mode;
+			decoded->read(&detail_mode, sizeof(detail_mode));
+			mtl->DetailMode(static_cast<RenderMaterial::SurfaceDetailMode>(detail_mode));
+			if ((mtl->DetailMode() == RenderMaterial::SurfaceDetailMode::FlatTessellation) ||
+				(mtl->DetailMode() == RenderMaterial::SurfaceDetailMode::SmoothTessellation))
 			{
-				std::string type = ReadShortString(decoded);
-				std::string name = ReadShortString(decoded);
-				mtl->texture_slots.push_back(std::make_pair(type, name));
+				float tess_factor;
+				decoded->read(&tess_factor, sizeof(tess_factor));
+				mtl->EdgeTessHint(LE2Native(tess_factor));
+				decoded->read(&tess_factor, sizeof(tess_factor));
+				mtl->InsideTessHint(LE2Native(tess_factor));
+				decoded->read(&tess_factor, sizeof(tess_factor));
+				mtl->MinTessFactor(LE2Native(tess_factor));
+				decoded->read(&tess_factor, sizeof(tess_factor));
+				mtl->MaxTessFactor(LE2Native(tess_factor));
 			}
+			else
+			{
+				mtl->EdgeTessHint(5);
+				mtl->InsideTessHint(5);
+				mtl->MinTessFactor(1);
+				mtl->MaxTessFactor(9);
+			}
+
+			mtl->LoadTextureSlots();
 		}
 
 		uint32_t num_merged_ves;
@@ -1184,69 +1322,33 @@ namespace KlayGE
 
 		int const index_elem_size = all_is_index_16_bit ? 2 : 4;
 
-		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 		merged_buff.resize(merged_ves.size());
 		for (size_t i = 0; i < merged_buff.size(); ++ i)
 		{
 			merged_buff[i].resize(all_num_vertices * merged_ves[i].element_size());
 			decoded->read(&merged_buff[i][0], merged_buff[i].size() * sizeof(merged_buff[i][0]));
-
-			if ((EF_A2BGR10 == merged_ves[i].format) && !rf.RenderEngineInstance().DeviceCaps().vertex_format_support(EF_A2BGR10))
-			{
-				merged_ves[i].format = EF_ARGB8;
-
-				uint32_t* p = reinterpret_cast<uint32_t*>(&merged_buff[i][0]);
-				for (uint32_t j = 0; j < all_num_vertices; ++ j)
-				{
-					float x = ((p[j] >>  0) & 0x3FF) / 1023.0f;
-					float y = ((p[j] >> 10) & 0x3FF) / 1023.0f;
-					float z = ((p[j] >> 20) & 0x3FF) / 1023.0f;
-					float w = ((p[j] >> 30) & 0x3) / 3.0f;
-
-					p[j] = (MathLib::clamp<uint32_t>(static_cast<uint32_t>(x * 255), 0, 255) << 16)
-						| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(y * 255), 0, 255) << 8)
-						| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(z * 255), 0, 255) << 0)
-						| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(w * 255), 0, 255) << 24);
-				}
-			}
-			if ((EF_ARGB8 == merged_ves[i].format) && !rf.RenderEngineInstance().DeviceCaps().vertex_format_support(EF_ARGB8))
-			{
-				BOOST_ASSERT(rf.RenderEngineInstance().DeviceCaps().vertex_format_support(EF_ABGR8));
-
-				merged_ves[i].format = EF_ABGR8;
-
-				uint32_t* p = reinterpret_cast<uint32_t*>(&merged_buff[i][0]);
-				for (uint32_t j = 0; j < all_num_vertices; ++ j)
-				{
-					float x = ((p[j] >> 16) & 0xFF) / 255.0f;
-					float y = ((p[j] >>  8) & 0xFF) / 255.0f;
-					float z = ((p[j] >>  0) & 0xFF) / 255.0f;
-					float w = ((p[j] >> 24) & 0xFF) / 255.0f;
-
-					p[j] = (MathLib::clamp<uint32_t>(static_cast<uint32_t>(x * 255), 0, 255) << 0)
-						| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(y * 255), 0, 255) << 8)
-						| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(z * 255), 0, 255) << 16)
-						| (MathLib::clamp<uint32_t>(static_cast<uint32_t>(w * 255), 0, 255) << 24);
-				}
-			}
 		}
 		merged_indices.resize(all_num_indices * index_elem_size);
 		decoded->read(&merged_indices[0], merged_indices.size() * sizeof(merged_indices[0]));
 
 		mesh_names.resize(num_meshes);
 		mtl_ids.resize(num_meshes);
+		mesh_lods.resize(num_meshes);
 		pos_bbs.resize(num_meshes);
 		tc_bbs.resize(num_meshes);
-		mesh_num_vertices.resize(num_meshes);
-		mesh_base_vertices.resize(num_meshes);
-		mesh_num_triangles.resize(num_meshes);
-		mesh_base_triangles.resize(num_meshes);
+		mesh_num_vertices.clear();
+		mesh_base_vertices.clear();
+		mesh_num_indices.clear();
+		mesh_start_indices.clear();
 		for (uint32_t mesh_index = 0; mesh_index < num_meshes; ++ mesh_index)
 		{
-			mesh_names[mesh_index] = ReadShortString(decoded);
+			mesh_names[mesh_index] = ReadShortString(*decoded);
 
 			decoded->read(&mtl_ids[mesh_index], sizeof(mtl_ids[mesh_index]));
 			mtl_ids[mesh_index] = LE2Native(mtl_ids[mesh_index]);
+
+			decoded->read(&mesh_lods[mesh_index], sizeof(mesh_lods[mesh_index]));
+			mesh_lods[mesh_index] = LE2Native(mesh_lods[mesh_index]);
 
 			float3 min_bb, max_bb;
 			decoded->read(&min_bb, sizeof(min_bb));
@@ -1271,53 +1373,104 @@ namespace KlayGE
 			max_bb.z() = 0;
 			tc_bbs[mesh_index] = AABBox(min_bb, max_bb);
 
-			decoded->read(&mesh_num_vertices[mesh_index], sizeof(mesh_num_vertices[mesh_index]));
-			mesh_num_vertices[mesh_index] = LE2Native(mesh_num_vertices[mesh_index]);
-			decoded->read(&mesh_base_vertices[mesh_index], sizeof(mesh_base_vertices[mesh_index]));
-			mesh_base_vertices[mesh_index] = LE2Native(mesh_base_vertices[mesh_index]);
-			decoded->read(&mesh_num_triangles[mesh_index], sizeof(mesh_num_triangles[mesh_index]));
-			mesh_num_triangles[mesh_index] = LE2Native(mesh_num_triangles[mesh_index]);
-			decoded->read(&mesh_base_triangles[mesh_index], sizeof(mesh_base_triangles[mesh_index]));
-			mesh_base_triangles[mesh_index] = LE2Native(mesh_base_triangles[mesh_index]);
+			for (uint32_t lod = 0; lod < mesh_lods[mesh_index]; ++ lod)
+			{
+				uint32_t tmp;
+				decoded->read(&tmp, sizeof(tmp));
+				mesh_num_vertices.push_back(LE2Native(tmp));
+				decoded->read(&tmp, sizeof(tmp));
+				mesh_base_vertices.push_back(LE2Native(tmp));
+				decoded->read(&tmp, sizeof(tmp));
+				mesh_num_indices.push_back(LE2Native(tmp));
+				decoded->read(&tmp, sizeof(tmp));
+				mesh_start_indices.push_back(LE2Native(tmp));
+			}
+		}
+
+		nodes.resize(num_nodes);
+		for (auto& node : nodes)
+		{
+			auto node_name = ReadShortString(*decoded);
+			std::wstring node_wname;
+			Convert(node_wname, node_name);
+
+			uint32_t attrib;
+			decoded->read(&attrib, sizeof(attrib));
+
+			node.node = MakeSharedPtr<SceneNode>(node_wname, attrib);
+
+			int16_t parent_index;
+			decoded->read(&parent_index, sizeof(parent_index));
+			parent_index = LE2Native(parent_index);
+
+			if (parent_index >= 0)
+			{
+				nodes[parent_index].node->AddChild(node.node);
+			}
+
+			uint16_t num_mesh_indices;
+			decoded->read(&num_mesh_indices, sizeof(num_mesh_indices));
+			num_mesh_indices = LE2Native(num_mesh_indices);
+
+			if (num_mesh_indices > 0)
+			{
+				node.mesh_indices.resize(num_mesh_indices);
+				decoded->read(node.mesh_indices.data(), node.mesh_indices.size() * sizeof(node.mesh_indices[0]));
+				for (auto& mesh_index : node.mesh_indices)
+				{
+					mesh_index = LE2Native(mesh_index);
+				}
+			}
+
+			int16_t joint_index;
+			decoded->read(&joint_index, sizeof(joint_index));
+			node.joint_index = LE2Native(joint_index);
+
+			float4x4 xform_to_parent;
+			decoded->read(&xform_to_parent, sizeof(xform_to_parent));
+			for (auto& item : xform_to_parent)
+			{
+				item = LE2Native(item);
+			}
+			node.node->TransformToParent(xform_to_parent);
 		}
 
 		joints.resize(num_joints);
 		for (uint32_t joint_index = 0; joint_index < num_joints; ++ joint_index)
 		{
-			Joint& joint = joints[joint_index];
+			joints[joint_index] = MakeSharedPtr<JointComponent>();
+			JointComponent& joint = *joints[joint_index];
 
-			joint.name = ReadShortString(decoded);
-			decoded->read(&joint.parent, sizeof(joint.parent));
-			joint.parent = LE2Native(joint.parent);
+			Quaternion bind_real;
+			decoded->read(&bind_real, sizeof(bind_real));
+			bind_real[0] = LE2Native(bind_real[0]);
+			bind_real[1] = LE2Native(bind_real[1]);
+			bind_real[2] = LE2Native(bind_real[2]);
+			bind_real[3] = LE2Native(bind_real[3]);
 
-			decoded->read(&joint.bind_real, sizeof(joint.bind_real));
-			joint.bind_real[0] = LE2Native(joint.bind_real[0]);
-			joint.bind_real[1] = LE2Native(joint.bind_real[1]);
-			joint.bind_real[2] = LE2Native(joint.bind_real[2]);
-			joint.bind_real[3] = LE2Native(joint.bind_real[3]);
-			decoded->read(&joint.bind_dual, sizeof(joint.bind_dual));
-			joint.bind_dual[0] = LE2Native(joint.bind_dual[0]);
-			joint.bind_dual[1] = LE2Native(joint.bind_dual[1]);
-			joint.bind_dual[2] = LE2Native(joint.bind_dual[2]);
-			joint.bind_dual[3] = LE2Native(joint.bind_dual[3]);
+			Quaternion bind_dual;
+			decoded->read(&bind_dual, sizeof(bind_dual));
+			bind_dual[0] = LE2Native(bind_dual[0]);
+			bind_dual[1] = LE2Native(bind_dual[1]);
+			bind_dual[2] = LE2Native(bind_dual[2]);
+			bind_dual[3] = LE2Native(bind_dual[3]);
 
-			float flip = MathLib::sgn(joint.bind_real.w());
+			float flip = MathLib::SignBit(bind_real.w());
 
-			joint.bind_scale = MathLib::length(joint.bind_real);
-			joint.inverse_origin_scale = 1 / joint.bind_scale;
-			joint.bind_real *= joint.inverse_origin_scale;
+			float bind_scale = MathLib::length(bind_real);
+			float inverse_origin_scale = 1 / bind_scale;
+			bind_real *= inverse_origin_scale;
 
+			Quaternion inverse_origin_real, inverse_origin_dual;
 			if (flip > 0)
 			{
-				std::pair<Quaternion, Quaternion> inv = MathLib::inverse(joint.bind_real, joint.bind_dual);
-				joint.inverse_origin_real = inv.first;
-				joint.inverse_origin_dual = inv.second;
+				std::tie(inverse_origin_real, inverse_origin_dual) = MathLib::inverse(bind_real, bind_dual);
 			}
 			else
 			{
-				float4x4 tmp_mat = MathLib::scaling(joint.bind_scale, joint.bind_scale, flip * joint.bind_scale)
-					* MathLib::to_matrix(joint.bind_real)
-					* MathLib::translation(MathLib::udq_to_trans(joint.bind_real, joint.bind_dual));
+				float4x4 tmp_mat = MathLib::scaling(bind_scale, bind_scale, flip * bind_scale)
+					* MathLib::to_matrix(bind_real)
+					* MathLib::translation(MathLib::udq_to_trans(bind_real, bind_dual));
 				tmp_mat = MathLib::inverse(tmp_mat);
 				tmp_mat(2, 0) = -tmp_mat(2, 0);
 				tmp_mat(2, 1) = -tmp_mat(2, 1);
@@ -1328,12 +1481,15 @@ namespace KlayGE
 				float3 trans;
 				MathLib::decompose(scale, rot, trans, tmp_mat);
 
-				joint.inverse_origin_real = rot;
-				joint.inverse_origin_dual = MathLib::quat_trans_to_udq(rot, trans);
-				joint.inverse_origin_scale = -scale.x();
+				inverse_origin_real = rot;
+				inverse_origin_dual = MathLib::quat_trans_to_udq(rot, trans);
+				inverse_origin_scale = -scale.x();
 			}
-			
-			joint.bind_scale *= flip;
+
+			bind_scale *= flip;
+
+			joint.BindParams(bind_real, bind_dual, bind_scale);
+			joint.InverseOriginParams(inverse_origin_real, inverse_origin_dual, inverse_origin_scale);
 		}
 
 		if (num_kfs > 0)
@@ -1343,7 +1499,7 @@ namespace KlayGE
 			decoded->read(&frame_rate, sizeof(frame_rate));
 			frame_rate = LE2Native(frame_rate);
 
-			kfs = MakeSharedPtr<KeyFramesType>(joints.size());
+			kfs = MakeSharedPtr<std::vector<KeyFrameSet>>(joints.size());
 			for (uint32_t kf_index = 0; kf_index < num_kfs; ++ kf_index)
 			{
 				uint32_t joint_index = kf_index;
@@ -1352,7 +1508,7 @@ namespace KlayGE
 				decoded->read(&num_kf, sizeof(num_kf));
 				num_kf = LE2Native(num_kf);
 
-				KeyFrames kf;
+				KeyFrameSet kf;
 				kf.frame_id.resize(num_kf);
 				kf.bind_real.resize(num_kf);
 				kf.bind_dual.resize(num_kf);
@@ -1372,7 +1528,7 @@ namespace KlayGE
 					kf.bind_dual[k_index][2] = LE2Native(kf.bind_dual[k_index][2]);
 					kf.bind_dual[k_index][3] = LE2Native(kf.bind_dual[k_index][3]);
 
-					float flip = MathLib::sgn(kf.bind_real[k_index].w());
+					float flip = MathLib::SignBit(kf.bind_real[k_index].w());
 
 					kf.bind_scale[k_index] = MathLib::length(kf.bind_real[k_index]);
 					kf.bind_real[k_index] /= kf.bind_scale[k_index];
@@ -1393,7 +1549,7 @@ namespace KlayGE
 				decoded->read(&num_bb_kf, sizeof(num_bb_kf));
 				num_bb_kf = LE2Native(num_bb_kf);
 
-				frame_pos_bbs[mesh_index] = MakeSharedPtr<AABBKeyFrames>();
+				frame_pos_bbs[mesh_index] = MakeSharedPtr<AABBKeyFrameSet>();
 				frame_pos_bbs[mesh_index]->frame_id.resize(num_bb_kf);
 				frame_pos_bbs[mesh_index]->bb.resize(num_bb_kf);
 
@@ -1414,415 +1570,639 @@ namespace KlayGE
 					frame_pos_bbs[mesh_index]->bb[bb_k_index] = AABBox(bb_min, bb_max);
 				}
 			}
-			
-			if (num_actions > 0)
+
+			if (num_animations > 0)
 			{
-				actions = MakeSharedPtr<AnimationActionsType>(num_actions);
-				for (uint32_t action_index = 0; action_index < num_actions; ++ action_index)
+				animations = MakeSharedPtr<std::vector<Animation>>(num_animations);
+				for (uint32_t animation_index = 0; animation_index < num_animations; ++animation_index)
 				{
-					AnimationAction action;
-					action.name = ReadShortString(decoded);
-					decoded->read(&action.start_frame, sizeof(action.start_frame));
-					action.start_frame = LE2Native(action.start_frame);
-					decoded->read(&action.end_frame, sizeof(action.end_frame));
-					action.end_frame = LE2Native(action.end_frame);
-					actions->push_back(action);
+					Animation animation;
+					animation.name = ReadShortString(*decoded);
+					decoded->read(&animation.start_frame, sizeof(animation.start_frame));
+					animation.start_frame = LE2Native(animation.start_frame);
+					decoded->read(&animation.end_frame, sizeof(animation.end_frame));
+					animation.end_frame = LE2Native(animation.end_frame);
+					(*animations)[animation_index] = animation;
 				}
 			}
 		}
-	}
 
-	RenderModelPtr SyncLoadModel(std::string const & meshml_name, uint32_t access_hint,
-		function<RenderModelPtr(std::wstring const &)> CreateModelFactoryFunc,
-		function<StaticMeshPtr(RenderModelPtr const &, std::wstring const &)> CreateMeshFactoryFunc)
-	{
-		BOOST_ASSERT(CreateModelFactoryFunc);
-		BOOST_ASSERT(CreateMeshFactoryFunc);
+		bool const skinned = kfs && !kfs->empty();
 
-		return ResLoader::Instance().SyncQueryT<RenderModel>(MakeSharedPtr<RenderModelLoadingDesc>(meshml_name,
-			access_hint, CreateModelFactoryFunc, CreateMeshFactoryFunc));
-	}
-
-	function<RenderModelPtr()> ASyncLoadModel(std::string const & meshml_name, uint32_t access_hint,
-		function<RenderModelPtr(std::wstring const &)> CreateModelFactoryFunc,
-		function<StaticMeshPtr(RenderModelPtr const &, std::wstring const &)> CreateMeshFactoryFunc)
-	{
-		BOOST_ASSERT(CreateModelFactoryFunc);
-		BOOST_ASSERT(CreateMeshFactoryFunc);
-
-		return ResLoader::Instance().ASyncQueryT<RenderModel>(MakeSharedPtr<RenderModelLoadingDesc>(meshml_name,
-			access_hint, CreateModelFactoryFunc, CreateMeshFactoryFunc));
-	}
-
-	void SaveModel(std::string const & meshml_name, std::vector<RenderMaterialPtr> const & mtls,
-		std::vector<vertex_element> const & merged_ves, char all_is_index_16_bit, 
-		std::vector<std::vector<uint8_t> > const & merged_buffs, std::vector<uint8_t> const & merged_indices,
-		std::vector<std::string> const & mesh_names, std::vector<int32_t> const & mtl_ids,
-		std::vector<AABBox> const & pos_bbs, std::vector<AABBox> const & tc_bbs,
-		std::vector<uint32_t>& mesh_num_vertices, std::vector<uint32_t>& mesh_base_vertices,
-		std::vector<uint32_t>& mesh_num_triangles, std::vector<uint32_t>& mesh_base_triangles,
-		std::vector<Joint> const & joints, shared_ptr<AnimationActionsType> const & actions,
-		shared_ptr<KeyFramesType> const & kfs, uint32_t num_frames, uint32_t frame_rate)
-	{
-		MeshMLObj obj(1);
-		obj.NumFrames(num_frames);
-		obj.FrameRate(frame_rate);
-
-		std::map<size_t, int> joint_map;
-		for (size_t i = 0; i < joints.size(); ++ i)
+		RenderModelPtr model;
+		if (skinned)
 		{
-			int joint_id = obj.AllocJoint();
-			joint_map.insert(std::make_pair(i, joint_id));
-
-			int parent_id = -1;
-			if (joints[i].parent != -1)
-			{
-				parent_id = joint_map[joints[i].parent];
-			}
-
-			obj.SetJoint(joint_id, joints[i].name, parent_id, joints[i].bind_real * joints[i].bind_scale, joints[i].bind_dual);
+			model = MakeSharedPtr<SkinnedModel>(nodes[0].node);
+		}
+		else
+		{
+			model = MakeSharedPtr<RenderModel>(nodes[0].node);
 		}
 
-		std::map<size_t, int> mtl_map;
-		for (size_t i = 0; i < mtls.size(); ++ i)
+		model->NumMaterials(mtls.size());
+		for (uint32_t mtl_index = 0; mtl_index < mtls.size(); ++ mtl_index)
 		{
-			int mtl_id = obj.AllocMaterial();
-			mtl_map.insert(std::make_pair(i, mtl_id));
-
-			float3 ambient = mtls[i]->ambient;
-			float3 diffuse = mtls[i]->diffuse;
-			if (Context::Instance().Config().graphics_cfg.gamma)
-			{
-				ambient.x() = MathLib::linear_to_srgb(ambient.x());
-				ambient.y() = MathLib::linear_to_srgb(ambient.y());
-				ambient.z() = MathLib::linear_to_srgb(ambient.z());
-				diffuse.x() = MathLib::linear_to_srgb(diffuse.x());
-				diffuse.y() = MathLib::linear_to_srgb(diffuse.y());
-				diffuse.z() = MathLib::linear_to_srgb(diffuse.z());
-			}
-
-			obj.SetMaterial(mtl_id, ambient, diffuse, mtls[i]->specular, mtls[i]->emit,
-				mtls[i]->opacity, mtls[i]->shininess);
-
-			for (size_t ts = 0; ts < mtls[i]->texture_slots.size(); ++ ts)
-			{
-				int slot_id = obj.AllocTextureSlot(mtl_id);
-				obj.SetTextureSlot(mtl_id, slot_id, mtls[i]->texture_slots[ts].first, mtls[i]->texture_slots[ts].second);
-			}
+			model->GetMaterial(mtl_index) = mtls[mtl_index];
 		}
 
-		for (size_t i = 0; i < mesh_names.size(); ++ i)
+		std::vector<GraphicsBufferPtr> merged_vbs(merged_buff.size());
+		for (size_t i = 0; i < merged_buff.size(); ++ i)
 		{
-			int mesh_id = obj.AllocMesh();
-			
-			obj.SetMesh(mesh_id, mtl_map[mtl_ids[i]], mesh_names[i]);
+			auto vb = MakeSharedPtr<SoftwareGraphicsBuffer>(static_cast<uint32_t>(merged_buff[i].size()), false);
+			vb->CreateHWResource(merged_buff[i].data());
 
-			AABBox const & pos_bb = pos_bbs[i];
-			AABBox const & tc_bb = tc_bbs[i];
-			float3 const pos_center = pos_bb.Center();
-			float3 const pos_extent = pos_bb.HalfSize();
-			float3 const tc_center = tc_bb.Center();
-			float3 const tc_extent = tc_bb.HalfSize();
-
-			for (size_t v = 0; v < mesh_num_vertices[i]; ++ v)
-			{
-				int vert_id = obj.AllocVertex(mesh_id);
-
-				float3 pos;
-				float3 normal;
-				Quaternion tangent_quat;
-				std::vector<float3> texcoords;
-				std::vector<std::pair<int, float> > bindings;
-				bool has_normal = false;
-				for (size_t ve = 0; ve < merged_ves.size(); ++ ve)
-				{
-					uint8_t const * src = &merged_buffs[ve][(mesh_base_vertices[i] + v) * merged_ves[ve].element_size()];
-
-					switch (merged_ves[ve].usage)
-					{
-					case VEU_Position:
-						pos = float3(0, 0, 0);
-						switch (merged_ves[ve].format)
-						{
-						case EF_ABGR32F:
-						case EF_BGR32F:
-						case EF_GR32F:
-						case EF_R32F:
-							std::memcpy(&pos, src, std::min<int>(merged_ves[ve].element_size(), sizeof(pos)));
-							break;
-
-						default:
-							{
-								BOOST_ASSERT(EF_SIGNED_ABGR16 == merged_ves[ve].format);
-
-								int16_t const * p = reinterpret_cast<int16_t const *>(src);
-								pos.x() = (((p[0] + 32768) / 65536.0f) * 2 - 1) * pos_extent.x() + pos_center.x();
-								pos.y() = (((p[1] + 32768) / 65536.0f) * 2 - 1) * pos_extent.y() + pos_center.y();
-								pos.z() = (((p[2] + 32768) / 65536.0f) * 2 - 1) * pos_extent.z() + pos_center.z();
-							}
-							break;
-						}
-						break;
-
-					case VEU_TextureCoord:
-						texcoords.push_back(float3(0, 0, 0));
-						switch (merged_ves[ve].format)
-						{
-						case EF_ABGR32F:
-						case EF_BGR32F:
-						case EF_GR32F:
-						case EF_R32F:
-							std::memcpy(&texcoords.back(), src, std::min<int>(merged_ves[ve].element_size(), sizeof(texcoords.back())));
-							break;
-
-						default:
-							{
-								BOOST_ASSERT(EF_SIGNED_GR16 == merged_ves[ve].format);
-
-								int16_t const * p = reinterpret_cast<int16_t const *>(src);
-								texcoords.back().x() = (((p[0] + 32768) / 65536.0f) * 2 - 1) * tc_extent.x() + tc_center.x();
-								texcoords.back().y() = (((p[1] + 32768) / 65536.0f) * 2 - 1) * tc_extent.y() + tc_center.y();
-							}
-							break;
-						}
-						break;
-
-					case VEU_Normal:
-						has_normal = true;
-						switch (merged_ves[ve].format)
-						{
-						case EF_ABGR32F:
-						case EF_BGR32F:
-							std::memcpy(&normal, src, std::min<int>(merged_ves[ve].element_size(), sizeof(normal)));
-							break;
-
-						case EF_A2BGR10:
-							{
-								uint32_t const p = *reinterpret_cast<uint32_t const *>(src);
-								normal.x() = ((p >>  0) & 0x3FF) / 1023.0f * 2 - 1;
-								normal.y() = ((p >> 10) & 0x3FF) / 1023.0f * 2 - 1;
-								normal.z() = ((p >> 20) & 0x3FF) / 1023.0f * 2 - 1;
-							}
-							break;
-
-						case EF_ABGR8:
-							{
-								uint32_t const p = *reinterpret_cast<uint32_t const *>(src);
-								normal.x() = ((p >>  0) & 0xFF) / 255.0f * 2 - 1;
-								normal.y() = ((p >>  8) & 0xFF) / 255.0f * 2 - 1;
-								normal.z() = ((p >> 16) & 0xFF) / 255.0f * 2 - 1;
-							}
-							break;
-
-						default:
-							{
-								BOOST_ASSERT(EF_ARGB8 == merged_ves[ve].format);
-
-								uint32_t const p = *reinterpret_cast<uint32_t const *>(src);
-								normal.x() = ((p >> 16) & 0xFF) / 255.0f * 2 - 1;
-								normal.y() = ((p >>  8) & 0xFF) / 255.0f * 2 - 1;
-								normal.z() = ((p >>  0) & 0xFF) / 255.0f * 2 - 1;
-							}
-							break;
-						}
-						break;
-
-					case VEU_Tangent:
-						has_normal = false;
-						switch (merged_ves[ve].format)
-						{
-						case EF_ABGR32F:
-							std::memcpy(&tangent_quat, src, std::min<int>(merged_ves[ve].element_size(), sizeof(tangent_quat)));
-							break;
-
-						case EF_ABGR8:
-							{
-								uint32_t const p = *reinterpret_cast<uint32_t const *>(src);
-								tangent_quat.x() = ((p >>  0) & 0xFF) / 255.0f * 2 - 1;
-								tangent_quat.y() = ((p >>  8) & 0xFF) / 255.0f * 2 - 1;
-								tangent_quat.z() = ((p >> 16) & 0xFF) / 255.0f * 2 - 1;
-								tangent_quat.w() = ((p >> 24) & 0xFF) / 255.0f * 2 - 1;
-							}
-							break;
-
-						default:
-							{
-								BOOST_ASSERT(EF_ARGB8 == merged_ves[ve].format);
-
-								uint32_t const p = *reinterpret_cast<uint32_t const *>(src);
-								tangent_quat.x() = ((p >> 16) & 0xFF) / 255.0f * 2 - 1;
-								tangent_quat.y() = ((p >>  8) & 0xFF) / 255.0f * 2 - 1;
-								tangent_quat.z() = ((p >>  0) & 0xFF) / 255.0f * 2 - 1;
-								tangent_quat.w() = ((p >> 24) & 0xFF) / 255.0f * 2 - 1;
-							}
-							break;
-						}
-						break;
-
-					case VEU_BlendIndex:
-						bindings.resize(4);
-						for (int b = 0; b < 4; ++ b)
-						{
-							bindings[b].first = src[b];
-						}
-						break;
-
-					case VEU_BlendWeight:
-						bindings.resize(4);
-						switch (merged_ves[ve].format)
-						{
-						case EF_ABGR32F:
-							{
-								float const * p = reinterpret_cast<float const *>(src);
-								for (int b = 0; b < 4; ++ b)
-								{
-									bindings[b].second = p[b];
-								}
-							}
-							break;
-
-						case EF_ABGR8:
-							for (int b = 0; b < 4; ++ b)
-							{
-								bindings[b].second = src[b] / 255.0f;
-							}
-							break;
-
-						default:
-							BOOST_ASSERT(EF_ARGB8 == merged_ves[ve].format);
-								
-							for (int b = 0; b < 4; ++ b)
-							{
-								bindings[b].second = src[b] / 255.0f;
-							}
-							std::swap(bindings[0].second, bindings[2].second);
-							break;
-						}
-						break;
-
-					default:
-						break;
-					}
-				}
-				if (has_normal)
-				{
-					obj.SetVertex(mesh_id, vert_id, pos, normal, 2, texcoords);
-				}
-				else
-				{
-					obj.SetVertex(mesh_id, vert_id, pos, tangent_quat, 2, texcoords);
-				}
-
-				for (size_t b = 0; b < bindings.size(); ++ b)
-				{
-					if (bindings[b].second > 0)
-					{
-						int binding_id = obj.AllocJointBinding(mesh_id, vert_id);
-						obj.SetJointBinding(mesh_id, vert_id, binding_id, joint_map[bindings[b].first], bindings[b].second);
-					}
-				}
-			}
-
-			for (size_t t = 0; t < mesh_num_triangles[i]; ++ t)
-			{
-				int tri_id = obj.AllocTriangle(mesh_id);
-				int index[3];
-				if (all_is_index_16_bit)
-				{
-					uint16_t const * src = reinterpret_cast<uint16_t const *>(&merged_indices[(mesh_base_triangles[i] + t * 3) * sizeof(uint16_t)]);
-					index[0] = src[0];
-					index[1] = src[1];
-					index[2] = src[2];
-				}
-				else
-				{
-					uint32_t const * src = reinterpret_cast<uint32_t const *>(&merged_indices[(mesh_base_triangles[i] + t * 3)* sizeof(uint32_t)]);
-					index[0] = src[0];
-					index[1] = src[1];
-					index[2] = src[2];
-				}
-				obj.SetTriangle(mesh_id, tri_id, index[0], index[1], index[2]);
-			}
+			merged_vbs[i] = vb;
 		}
+		auto merged_ib = MakeSharedPtr<SoftwareGraphicsBuffer>(static_cast<uint32_t>(merged_indices.size()), false);
+		merged_ib->CreateHWResource(merged_indices.data());
 
-		if (kfs)
+		uint32_t mesh_lod_index = 0;
+		std::vector<StaticMeshPtr> meshes(num_meshes);
+		for (uint32_t mesh_index = 0; mesh_index < num_meshes; ++ mesh_index)
 		{
-			for (size_t i = 0; i < kfs->size(); ++ i)
-			{
-				int kfs_id = obj.AllocKeyframes();
-				obj.SetKeyframes(kfs_id, joint_map[i]);
+			std::wstring wname;
+			Convert(wname, mesh_names[mesh_index]);
 
-				for (size_t k = 0; k < (*kfs)[i].frame_id.size(); ++ k)
-				{
-					int kf_id = obj.AllocKeyframe(kfs_id);
-					obj.SetKeyframe(kfs_id, kf_id, (*kfs)[i].frame_id[k], (*kfs)[i].bind_real[k] * (*kfs)[i].bind_scale[k], (*kfs)[i].bind_dual[k]);
-				}
-			}
-
-			if (actions)
+			if (skinned)
 			{
-				for (size_t i = 0; i < actions->size(); ++ i)
-				{
-					int action_id = obj.AllocAction();
-					obj.SetAction(action_id, (*actions)[i].name, (*actions)[i].start_frame, (*actions)[i].end_frame);
-				}
+				meshes[mesh_index] = MakeSharedPtr<SkinnedMesh>(wname);
 			}
 			else
 			{
-				int action_id = obj.AllocAction();
-				obj.SetAction(action_id, "root", 0, num_frames);
+				meshes[mesh_index] = MakeSharedPtr<StaticMesh>(wname);
+			}
+			StaticMeshPtr& mesh = meshes[mesh_index];
+
+			mesh->MaterialID(mtl_ids[mesh_index]);
+			mesh->PosBound(pos_bbs[mesh_index]);
+			mesh->TexcoordBound(tc_bbs[mesh_index]);
+
+			uint32_t const lods = mesh_lods[mesh_index];
+			mesh->NumLods(lods);
+			for (uint32_t lod = 0; lod < lods; ++ lod, ++ mesh_lod_index)
+			{
+				for (uint32_t ve_index = 0; ve_index < merged_buff.size(); ++ ve_index)
+				{
+					mesh->AddVertexStream(lod, merged_vbs[ve_index], merged_ves[ve_index]);
+				}
+				mesh->AddIndexStream(lod, merged_ib, all_is_index_16_bit ? EF_R16UI : EF_R32UI);
+
+				mesh->NumVertices(lod, mesh_num_vertices[mesh_lod_index]);
+				mesh->NumIndices(lod, mesh_num_indices[mesh_lod_index]);
+				mesh->StartVertexLocation(lod, mesh_base_vertices[mesh_lod_index]);
+				mesh->StartIndexLocation(lod, mesh_start_indices[mesh_lod_index]);
 			}
 		}
 
-		std::ofstream ofs(meshml_name.c_str());
-		obj.WriteMeshML(ofs);
+		if (kfs && !kfs->empty())
+		{
+			if (!joints.empty())
+			{
+				SkinnedModelPtr skinned_model = checked_pointer_cast<SkinnedModel>(model);
+
+				skinned_model->AssignJoints(joints.begin(), joints.end());
+				skinned_model->AttachKeyFrameSets(kfs);
+
+				skinned_model->NumFrames(num_frames);
+				skinned_model->FrameRate(frame_rate);
+
+				for (size_t mesh_index = 0; mesh_index < meshes.size(); ++ mesh_index)
+				{
+					SkinnedMeshPtr skinned_mesh = checked_pointer_cast<SkinnedMesh>(meshes[mesh_index]);
+					skinned_mesh->AttachFramePosBounds(frame_pos_bbs[mesh_index]);
+				}
+
+				skinned_model->AttachAnimations(animations);
+			}
+		}
+
+		model->AssignMeshes(meshes.begin(), meshes.end());
+
+		for (auto const& node : nodes)
+		{
+			for (auto const mesh_index : node.mesh_indices)
+			{
+				node.node->AddComponent(MakeSharedPtr<RenderableComponent>(meshes[mesh_index]));
+			}
+
+			if (node.joint_index >= 0)
+			{
+				node.node->AddComponent(joints[node.joint_index]);
+			}
+		}
+
+		model->RootNode()->UpdatePosBoundSubtree();
+
+		return model;
 	}
 
-	void SaveModel(RenderModelPtr const & model, std::string const & meshml_name)
+	void WriteMaterialsChunk(std::vector<RenderMaterialPtr> const & mtls, std::ostream& os)
 	{
-		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+		for (size_t i = 0; i < mtls.size(); ++ i)
+		{
+			auto& mtl = *mtls[i];
 
-		std::vector<RenderMaterialPtr> mtls(model->NumMaterials());
+			WriteShortString(os, mtl.Name());
+
+			for (uint32_t j = 0; j < 4; ++ j)
+			{
+				float const value = Native2LE(mtl.Albedo()[j]);
+				os.write(reinterpret_cast<char const *>(&value), sizeof(value));
+			}
+
+			float metalness = Native2LE(mtl.Metalness());
+			os.write(reinterpret_cast<char*>(&metalness), sizeof(metalness));
+
+			float glossiness = Native2LE(mtl.Glossiness());
+			os.write(reinterpret_cast<char*>(&glossiness), sizeof(glossiness));
+
+			for (uint32_t j = 0; j < 3; ++ j)
+			{
+				float const value = Native2LE(mtl.Emissive()[j]);
+				os.write(reinterpret_cast<char const *>(&value), sizeof(value));
+			}
+
+			uint8_t transparent = mtl.Transparent();
+			os.write(reinterpret_cast<char*>(&transparent), sizeof(transparent));
+
+			uint8_t alpha_test = static_cast<uint8_t>(MathLib::clamp(static_cast<int>(mtl.AlphaTestThreshold() * 255.0f + 0.5f), 0, 255));
+			os.write(reinterpret_cast<char*>(&alpha_test), sizeof(alpha_test));
+
+			uint8_t sss = mtl.Sss();
+			os.write(reinterpret_cast<char*>(&sss), sizeof(sss));
+
+			uint8_t two_sided = mtl.TwoSided();
+			os.write(reinterpret_cast<char*>(&two_sided), sizeof(two_sided));
+
+			for (size_t j = 0; j < RenderMaterial::TS_NumTextureSlots; ++ j)
+			{
+				WriteShortString(os, mtl.TextureName(static_cast<RenderMaterial::TextureSlot>(j)));
+			}
+			if (!mtl.TextureName(RenderMaterial::TS_Normal).empty())
+			{
+				float normal_scale = Native2LE(mtl.NormalScale());
+				os.write(reinterpret_cast<char*>(&normal_scale), sizeof(normal_scale));
+			}
+			if (!mtl.TextureName(RenderMaterial::TS_Height).empty())
+			{
+				float height_offset = Native2LE(mtl.HeightOffset());
+				os.write(reinterpret_cast<char*>(&height_offset), sizeof(height_offset));
+				float height_scale = Native2LE(mtl.HeightScale());
+				os.write(reinterpret_cast<char*>(&height_scale), sizeof(height_scale));
+			}
+			if (!mtl.TextureName(RenderMaterial::TS_Occlusion).empty())
+			{
+				float occlusion_strength = Native2LE(mtl.OcclusionStrength());
+				os.write(reinterpret_cast<char*>(&occlusion_strength), sizeof(occlusion_strength));
+			}
+
+			uint8_t detail_mode = static_cast<uint8_t>(mtl.DetailMode());
+			os.write(reinterpret_cast<char*>(&detail_mode), sizeof(detail_mode));
+			if ((mtl.DetailMode() == RenderMaterial::SurfaceDetailMode::FlatTessellation) ||
+				(mtl.DetailMode() == RenderMaterial::SurfaceDetailMode::SmoothTessellation))
+			{
+				float tess_factor = Native2LE(mtl.EdgeTessHint());
+				os.write(reinterpret_cast<char*>(&tess_factor), sizeof(tess_factor));
+				tess_factor = Native2LE(mtl.InsideTessHint());
+				os.write(reinterpret_cast<char*>(&tess_factor), sizeof(tess_factor));
+				tess_factor = Native2LE(mtl.MinTessFactor());
+				os.write(reinterpret_cast<char*>(&tess_factor), sizeof(tess_factor));
+				tess_factor = Native2LE(mtl.MaxTessFactor());
+				os.write(reinterpret_cast<char*>(&tess_factor), sizeof(tess_factor));
+			}
+		}
+	}
+
+	void WriteMeshesChunk(std::vector<std::string> const & mesh_names, std::vector<int32_t> const & mtl_ids, std::vector<uint32_t> const & mesh_lods,
+		std::vector<AABBox> const & pos_bbs, std::vector<AABBox> const & tc_bbs,
+		std::vector<uint32_t> const & mesh_num_vertices, std::vector<uint32_t> const & mesh_base_vertices,
+		std::vector<uint32_t> const & mesh_num_indices, std::vector<uint32_t> const & mesh_start_indices,
+		std::vector<VertexElement> const & merged_ves,
+		std::vector<std::vector<uint8_t>> const & merged_vertices, std::vector<uint8_t> const & merged_indices,
+		char is_index_16_bit, std::ostream& os)
+	{
+		uint32_t num_merged_ves = Native2LE(static_cast<uint32_t>(merged_ves.size()));
+		os.write(reinterpret_cast<char*>(&num_merged_ves), sizeof(num_merged_ves));
+		for (size_t i = 0; i < merged_ves.size(); ++ i)
+		{
+			VertexElement ve = merged_ves[i];
+			ve.usage = Native2LE(ve.usage);
+			ve.format = Native2LE(ve.format);
+			os.write(reinterpret_cast<char*>(&ve), sizeof(ve));
+		}
+
+		uint32_t num_vertices = Native2LE(mesh_base_vertices.back());
+		os.write(reinterpret_cast<char*>(&num_vertices), sizeof(num_vertices));
+		uint32_t num_indices = Native2LE(mesh_start_indices.back());
+		os.write(reinterpret_cast<char*>(&num_indices), sizeof(num_indices));
+		os.write(&is_index_16_bit, sizeof(is_index_16_bit));
+
+		for (size_t i = 0; i < merged_vertices.size(); ++ i)
+		{
+			os.write(reinterpret_cast<char const *>(&merged_vertices[i][0]), merged_vertices[i].size() * sizeof(merged_vertices[i][0]));
+		}
+		os.write(reinterpret_cast<char const *>(&merged_indices[0]), merged_indices.size() * sizeof(merged_indices[0]));
+
+		uint32_t mesh_lod_index = 0;
+		for (uint32_t mesh_index = 0; mesh_index < mesh_names.size(); ++ mesh_index)
+		{
+			WriteShortString(os, mesh_names[mesh_index]);
+
+			int32_t mtl_id = Native2LE(mtl_ids[mesh_index]);
+			os.write(reinterpret_cast<char*>(&mtl_id), sizeof(mtl_id));
+
+			uint32_t lods = Native2LE(mesh_lods[mesh_index]);
+			os.write(reinterpret_cast<char*>(&lods), sizeof(lods));
+
+			float3 min_bb;
+			min_bb.x() = Native2LE(pos_bbs[mesh_index].Min().x());
+			min_bb.y() = Native2LE(pos_bbs[mesh_index].Min().y());
+			min_bb.z() = Native2LE(pos_bbs[mesh_index].Min().z());
+			os.write(reinterpret_cast<char*>(&min_bb), sizeof(min_bb));
+			float3 max_bb;
+			max_bb.x() = Native2LE(pos_bbs[mesh_index].Max().x());
+			max_bb.y() = Native2LE(pos_bbs[mesh_index].Max().y());
+			max_bb.z() = Native2LE(pos_bbs[mesh_index].Max().z());
+			os.write(reinterpret_cast<char*>(&max_bb), sizeof(max_bb));
+
+			min_bb.x() = Native2LE(tc_bbs[mesh_index].Min().x());
+			min_bb.y() = Native2LE(tc_bbs[mesh_index].Min().y());
+			os.write(reinterpret_cast<char*>(&min_bb[0]), sizeof(min_bb[0]));
+			os.write(reinterpret_cast<char*>(&min_bb[1]), sizeof(min_bb[1]));
+			max_bb.x() = Native2LE(tc_bbs[mesh_index].Max().x());
+			max_bb.y() = Native2LE(tc_bbs[mesh_index].Max().y());
+			os.write(reinterpret_cast<char*>(&max_bb[0]), sizeof(max_bb[0]));
+			os.write(reinterpret_cast<char*>(&max_bb[1]), sizeof(max_bb[1]));
+
+			for (uint32_t lod = 0; lod < lods; ++ lod, ++ mesh_lod_index)
+			{
+				uint32_t nv = Native2LE(mesh_num_vertices[mesh_lod_index]);
+				os.write(reinterpret_cast<char*>(&nv), sizeof(nv));
+				uint32_t bv = Native2LE(mesh_base_vertices[mesh_lod_index]);
+				os.write(reinterpret_cast<char*>(&bv), sizeof(bv));
+				uint32_t ni = Native2LE(mesh_num_indices[mesh_lod_index]);
+				os.write(reinterpret_cast<char*>(&ni), sizeof(ni));
+				uint32_t si = Native2LE(mesh_start_indices[mesh_lod_index]);
+				os.write(reinterpret_cast<char*>(&si), sizeof(si));
+			}
+		}
+	}
+
+	void WriteNodesChunk(std::vector<SceneNode const*> const& nodes, std::vector<Renderable const*> const& renderables,
+		std::vector<JointComponent const*> const& joints, std::ostream& os)
+	{
+		std::map<Renderable const*, uint16_t> renderable_indices;
+		for (size_t i = 0; i < renderables.size(); ++i)
+		{
+			renderable_indices.emplace(renderables[i], static_cast<uint16_t>(i));
+		}
+
+		std::map<JointComponent const*, int16_t> joint_indices;
+		for (size_t i = 0; i < joints.size(); ++i)
+		{
+			joint_indices.emplace(joints[i], static_cast<int16_t>(i));
+		}
+
+		for (size_t i = 0; i < nodes.size(); ++ i)
+		{
+			std::string name;
+			Convert(name, nodes[i]->Name());
+			WriteShortString(os, name);
+
+			uint32_t attrib = Native2LE(nodes[i]->Attrib());
+			os.write(reinterpret_cast<char*>(&attrib), sizeof(attrib));
+
+			int16_t node_parent = -1;
+			if (nodes[i]->Parent() != nullptr)
+			{
+				for (size_t j = 0; j < i; ++ j)
+				{
+					if (nodes[j] == nodes[i]->Parent())
+					{
+						node_parent = static_cast<int16_t>(j);
+						break;
+					}
+				}
+			}
+
+			node_parent = Native2LE(node_parent);
+			os.write(reinterpret_cast<char*>(&node_parent), sizeof(node_parent));
+
+			int16_t joint_index = -1;
+			std::vector<uint16_t> mesh_indices;
+			nodes[i]->ForEachComponent(
+				[&mesh_indices, &joint_index, &renderable_indices, &joint_indices](SceneComponent& component) {
+					if (component.IsOfType<RenderableComponent>())
+					{
+						RenderableComponent const& renderable_comp = boost::typeindex::runtime_cast<RenderableComponent const&>(component);
+						Renderable const* renderable = &renderable_comp.BoundRenderable();
+						BOOST_ASSERT(renderable_indices.find(renderable) != renderable_indices.end());
+
+						uint16_t index = renderable_indices[renderable];
+						index = Native2LE(index);
+						mesh_indices.push_back(index);
+					}
+					else if (component.IsOfType<JointComponent>())
+					{
+						JointComponent const* joint_comp = boost::typeindex::runtime_cast<JointComponent const*>(&component);
+						BOOST_ASSERT(joint_indices.find(joint_comp) != joint_indices.end());
+
+						int16_t index = joint_indices[joint_comp];
+						joint_index = Native2LE(index);
+					}
+				});
+			uint16_t num_meshes = static_cast<uint16_t>(mesh_indices.size());
+			num_meshes = Native2LE(num_meshes);
+			os.write(reinterpret_cast<char*>(&num_meshes), sizeof(num_meshes));
+			os.write(reinterpret_cast<char*>(mesh_indices.data()), mesh_indices.size() * sizeof(mesh_indices[0]));
+
+			os.write(reinterpret_cast<char*>(&joint_index), sizeof(joint_index));
+
+			float4x4 xform_to_parent = nodes[i]->TransformToParent();
+			for (auto& item : xform_to_parent)
+			{
+				item = Native2LE(item);
+			}
+			os.write(reinterpret_cast<char*>(&xform_to_parent), sizeof(xform_to_parent));
+		}
+	}
+
+	void WriteBonesChunk(std::vector<JointComponent const*> const& joints, std::ostream& os)
+	{
+		for (size_t i = 0; i < joints.size(); ++ i)
+		{
+			auto const& joint = *joints[i];
+
+			Quaternion bind_real, bind_dual;
+			float bind_scale;
+			if (MathLib::SignBit(joint.InverseOriginScale()) > 0)
+			{
+				std::tie(bind_real, bind_dual) = MathLib::inverse(joint.InverseOriginReal(), joint.InverseOriginDual());
+				bind_scale = 1 / joint.InverseOriginScale();
+			}
+			else
+			{
+				float4x4 tmp_mat = MathLib::scaling(-joint.InverseOriginScale(), -joint.InverseOriginScale(), joint.InverseOriginScale())
+					* MathLib::to_matrix(joint.InverseOriginReal())
+					* MathLib::translation(MathLib::udq_to_trans(joint.InverseOriginReal(), joint.InverseOriginDual()));
+				tmp_mat = MathLib::inverse(tmp_mat);
+				tmp_mat(2, 0) = -tmp_mat(2, 0);
+				tmp_mat(2, 1) = -tmp_mat(2, 1);
+				tmp_mat(2, 2) = -tmp_mat(2, 2);
+
+				float3 scale;
+				Quaternion rot;
+				float3 trans;
+				MathLib::decompose(scale, rot, trans, tmp_mat);
+
+				bind_real = rot;
+				bind_dual = MathLib::quat_trans_to_udq(rot, trans);
+				bind_scale = -scale.x();
+			}
+
+			bind_real *= std::abs(bind_scale);
+
+			bind_real.x() = Native2LE(bind_real.x());
+			bind_real.y() = Native2LE(bind_real.y());
+			bind_real.z() = Native2LE(bind_real.z());
+			bind_real.w() = Native2LE(bind_real.w());
+			os.write(reinterpret_cast<char*>(&bind_real), sizeof(bind_real));
+
+			bind_dual.x() = Native2LE(bind_dual.x());
+			bind_dual.y() = Native2LE(bind_dual.y());
+			bind_dual.z() = Native2LE(bind_dual.z());
+			bind_dual.w() = Native2LE(bind_dual.w());
+			os.write(reinterpret_cast<char*>(&bind_dual), sizeof(bind_dual));
+		}
+	}
+
+	void WriteKeyFramesChunk(uint32_t num_frames, uint32_t frame_rate, std::vector<KeyFrameSet>& kfs,
+		std::ostream& os)
+	{
+		num_frames = Native2LE(num_frames);
+		os.write(reinterpret_cast<char*>(&num_frames), sizeof(num_frames));
+		frame_rate = Native2LE(frame_rate);
+		os.write(reinterpret_cast<char*>(&frame_rate), sizeof(frame_rate));
+
+		for (size_t i = 0; i < kfs.size(); ++ i)
+		{
+			uint32_t num_kf = Native2LE(static_cast<uint32_t>(kfs[i].frame_id.size()));
+			os.write(reinterpret_cast<char*>(&num_kf), sizeof(num_kf));
+
+			for (size_t j = 0; j < kfs[i].frame_id.size(); ++ j)
+			{
+				Quaternion bind_real = kfs[i].bind_real[j];
+				Quaternion bind_dual = kfs[i].bind_dual[j];
+				float bind_scale = kfs[i].bind_scale[j];
+
+				uint32_t frame_id = Native2LE(kfs[i].frame_id[j]);
+				os.write(reinterpret_cast<char*>(&frame_id), sizeof(frame_id));
+				bind_real *= bind_scale;
+				bind_real.x() = Native2LE(bind_real.x());
+				bind_real.y() = Native2LE(bind_real.y());
+				bind_real.z() = Native2LE(bind_real.z());
+				bind_real.w() = Native2LE(bind_real.w());
+				os.write(reinterpret_cast<char*>(&bind_real), sizeof(bind_real));
+				bind_dual.x() = Native2LE(bind_dual.x());
+				bind_dual.y() = Native2LE(bind_dual.y());
+				bind_dual.z() = Native2LE(bind_dual.z());
+				bind_dual.w() = Native2LE(bind_dual.w());
+				os.write(reinterpret_cast<char*>(&bind_dual), sizeof(bind_dual));
+			}
+		}
+	}
+
+	void WriteBBKeyFramesChunk(std::vector<std::shared_ptr<AABBKeyFrameSet>> const & frame_pos_bbs, std::ostream& os)
+	{
+		for (size_t i = 0; i < frame_pos_bbs.size(); ++ i)
+		{
+			auto& bb_kf = *frame_pos_bbs[i];
+
+			uint32_t num_bb_kf = Native2LE(static_cast<uint32_t>(bb_kf.frame_id.size()));
+			os.write(reinterpret_cast<char*>(&num_bb_kf), sizeof(num_bb_kf));
+
+			for (uint32_t j = 0; j < bb_kf.frame_id.size(); ++ j)
+			{
+				uint32_t frame_id = Native2LE(bb_kf.frame_id[j]);
+				os.write(reinterpret_cast<char*>(&frame_id), sizeof(frame_id));
+				float3 bb_min;
+				bb_min.x() = Native2LE(bb_kf.bb[j].Min().x());
+				bb_min.y() = Native2LE(bb_kf.bb[j].Min().y());
+				bb_min.z() = Native2LE(bb_kf.bb[j].Min().z());
+				os.write(reinterpret_cast<char*>(&bb_min), sizeof(bb_min));
+				float3 bb_max = bb_kf.bb[j].Max();
+				bb_max.x() = Native2LE(bb_kf.bb[j].Max().x());
+				bb_max.y() = Native2LE(bb_kf.bb[j].Max().y());
+				bb_max.z() = Native2LE(bb_kf.bb[j].Max().z());
+				os.write(reinterpret_cast<char*>(&bb_max), sizeof(bb_max));
+			}
+		}
+	}
+
+	void WriteAnimationsChunk(std::vector<Animation> const & animations, std::ostream& os)
+	{
+		for (size_t i = 0; i < animations.size(); ++ i)
+		{
+			WriteShortString(os, animations[i].name);
+
+			uint32_t sf = Native2LE(animations[i].start_frame);
+			os.write(reinterpret_cast<char*>(&sf), sizeof(sf));
+
+			uint32_t ef = Native2LE(animations[i].end_frame);
+			os.write(reinterpret_cast<char*>(&ef), sizeof(ef));
+		}
+	}
+
+	void SaveModel(std::string const & jit_name, std::vector<RenderMaterialPtr> const & mtls,
+		std::vector<VertexElement> const & merged_ves, char all_is_index_16_bit,
+		std::vector<std::vector<uint8_t>> const & merged_buffs, std::vector<uint8_t> const & merged_indices,
+		std::vector<std::string> const & mesh_names, std::vector<int32_t> const & mtl_ids, std::vector<uint32_t> const & mesh_lods,
+		std::vector<AABBox> const & pos_bbs, std::vector<AABBox> const & tc_bbs,
+		std::vector<uint32_t> const & mesh_num_vertices, std::vector<uint32_t> const & mesh_base_vertices,
+		std::vector<uint32_t> const & mesh_num_indices, std::vector<uint32_t> const & mesh_base_indices,
+		std::vector<SceneNode const *> const & nodes, std::vector<Renderable const *> const & renderables,
+		std::vector<JointComponent const*> const & joints, std::shared_ptr<std::vector<Animation>> const & animations,
+		std::shared_ptr<std::vector<KeyFrameSet>> const & kfs, uint32_t num_frames, uint32_t frame_rate,
+		std::vector<std::shared_ptr<AABBKeyFrameSet>> const & frame_pos_bbs)
+	{
+		std::ostringstream ss;
+
+		{
+			uint32_t num_mtls = Native2LE(static_cast<uint32_t>(mtls.size()));
+			ss.write(reinterpret_cast<char*>(&num_mtls), sizeof(num_mtls));
+
+			uint32_t num_meshes = Native2LE(static_cast<uint32_t>(pos_bbs.size()));
+			ss.write(reinterpret_cast<char*>(&num_meshes), sizeof(num_meshes));
+
+			uint32_t num_nodes = Native2LE(static_cast<uint32_t>(nodes.size()));
+			ss.write(reinterpret_cast<char*>(&num_nodes), sizeof(num_nodes));
+
+			uint32_t num_joints = Native2LE(static_cast<uint32_t>(joints.size()));
+			ss.write(reinterpret_cast<char*>(&num_joints), sizeof(num_joints));
+
+			uint32_t num_kfs = Native2LE(kfs ? static_cast<uint32_t>(kfs->size()) : 0);
+			ss.write(reinterpret_cast<char*>(&num_kfs), sizeof(num_kfs));
+
+			uint32_t num_animations = Native2LE(animations ? std::max(static_cast<uint32_t>(animations->size()), 1U) : 0);
+			ss.write(reinterpret_cast<char*>(&num_animations), sizeof(num_animations));
+		}
+
+		if (!mtls.empty())
+		{
+			WriteMaterialsChunk(mtls, ss);
+		}
+
+		if (!mesh_names.empty())
+		{
+			WriteMeshesChunk(mesh_names, mtl_ids, mesh_lods, pos_bbs, tc_bbs,
+				mesh_num_vertices, mesh_base_vertices, mesh_num_indices, mesh_base_indices,
+				merged_ves, merged_buffs, merged_indices, all_is_index_16_bit, ss);
+		}
+
+		if (!nodes.empty())
+		{
+			WriteNodesChunk(nodes, renderables, joints, ss);
+		}
+
+		if (!joints.empty())
+		{
+			WriteBonesChunk(joints, ss);
+		}
+
+		if (kfs && !kfs->empty())
+		{
+			WriteKeyFramesChunk(num_frames, frame_rate, *kfs, ss);
+
+			WriteBBKeyFramesChunk(frame_pos_bbs, ss);
+
+			WriteAnimationsChunk(*animations, ss);
+		}
+
+		std::ofstream ofs(jit_name.c_str(), std::ios_base::binary);
+		BOOST_ASSERT(ofs);
+		uint32_t fourcc = Native2LE(MakeFourCC<'K', 'L', 'M', ' '>::value);
+		ofs.write(reinterpret_cast<char*>(&fourcc), sizeof(fourcc));
+
+		uint32_t ver = Native2LE(MODEL_BIN_VERSION);
+		ofs.write(reinterpret_cast<char*>(&ver), sizeof(ver));
+
+		auto const & ss_str = ss.str();
+		uint64_t original_len = Native2LE(static_cast<uint64_t>(ss_str.size()));
+		ofs.write(reinterpret_cast<char*>(&original_len), sizeof(original_len));
+
+		std::ofstream::pos_type p = ofs.tellp();
+		uint64_t len = 0;
+		ofs.write(reinterpret_cast<char*>(&len), sizeof(len));
+
+		LZMACodec lzma;
+		len = lzma.Encode(ofs, MakeSpan(reinterpret_cast<uint8_t const *>(ss_str.c_str()), ss_str.size()));
+
+		ofs.seekp(p, std::ios_base::beg);
+		len = Native2LE(len);
+		ofs.write(reinterpret_cast<char*>(&len), sizeof(len));
+	}
+
+	void SaveModel(RenderModel const & model, std::string_view model_name)
+	{
+		std::filesystem::path output_path(model_name.begin(), model_name.end());
+		auto const output_ext = output_path.extension().string();
+		bool need_conversion = false;
+		if (output_ext != ".model_bin")
+		{
+			output_path += ".model_bin";
+			need_conversion = true;
+		}
+
+		std::vector<RenderMaterialPtr> mtls(model.NumMaterials());
 		if (!mtls.empty())
 		{
 			for (uint32_t i = 0; i < mtls.size(); ++ i)
 			{
-				mtls[i] = model->GetMaterial(i);
+				mtls[i] = model.GetMaterial(i);
 			}
 		}
 
-		std::vector<vertex_element> merged_ves;
-		std::vector<std::vector<uint8_t> > merged_buffs;
+		std::vector<VertexElement> merged_ves;
+		std::vector<std::vector<uint8_t>> merged_buffs;
 		char all_is_index_16_bit = false;
 		std::vector<uint8_t> merged_indices;
-		std::vector<std::string> mesh_names(model->NumSubrenderables());
+		std::vector<std::string> mesh_names(model.NumMeshes());
 		std::vector<int32_t> mtl_ids(mesh_names.size());
+		std::vector<uint32_t> mesh_lods(mesh_names.size());
 		std::vector<AABBox> pos_bbs(mesh_names.size());
 		std::vector<AABBox> tc_bbs(mesh_names.size());
-		std::vector<uint32_t> mesh_num_vertices(mesh_names.size());
-		std::vector<uint32_t> mesh_base_vertices(mesh_names.size());
-		std::vector<uint32_t> mesh_num_triangles(mesh_names.size());
-		std::vector<uint32_t> mesh_base_triangles(mesh_names.size());
+		std::vector<uint32_t> mesh_num_vertices;
+		std::vector<uint32_t> mesh_base_vertices;
+		std::vector<uint32_t> mesh_num_indices;
+		std::vector<uint32_t> mesh_base_indices;
 		if (!mesh_names.empty())
 		{
 			{
-				StaticMesh const & mesh = *checked_pointer_cast<StaticMesh>(model->Subrenderable(0));
+				auto const& mesh = checked_cast<StaticMesh&>(*model.Mesh(0));
 
-				RenderLayoutPtr const & rl = mesh.GetRenderLayout();
-				merged_ves.resize(rl->NumVertexStreams());
-				for (uint32_t j = 0; j < rl->NumVertexStreams(); ++ j)
+				RenderLayout const & rl = mesh.GetRenderLayout();
+				merged_ves.resize(rl.NumVertexStreams());
+				for (uint32_t j = 0; j < rl.NumVertexStreams(); ++ j)
 				{
-					merged_ves[j] = rl->VertexStreamFormat(j)[0];
+					merged_ves[j] = rl.VertexStreamFormat(j)[0];
 				}
 
 				merged_buffs.resize(merged_ves.size());
-				for (uint32_t j = 0; j < rl->NumVertexStreams(); ++ j)
+				for (uint32_t j = 0; j < rl.NumVertexStreams(); ++ j)
 				{
-					GraphicsBufferPtr const & vb = rl->GetVertexStream(j);
-					GraphicsBufferPtr vb_cpu = rf.MakeVertexBuffer(BU_Static, EAH_CPU_Read, nullptr);
+					GraphicsBufferPtr const & vb = rl.GetVertexStream(j);
 					uint32_t size = vb->Size();
-					vb_cpu->Resize(size);
-					vb->CopyToBuffer(*vb_cpu);
+					GraphicsBufferPtr vb_cpu;
+					if (vb->AccessHint() & EAH_CPU_Read)
+					{
+						vb_cpu = vb;
+					}
+					else
+					{
+						auto& rf = Context::Instance().RenderFactoryInstance();
+						vb_cpu = rf.MakeVertexBuffer(BU_Static, EAH_CPU_Read, size, nullptr);
+						vb->CopyToBuffer(*vb_cpu);
+					}
 
 					merged_buffs[j].resize(size);
 
@@ -1830,22 +2210,30 @@ namespace KlayGE
 					std::memcpy(&merged_buffs[j][0], mapper.Pointer<uint8_t>(), size);
 				}
 
-				if (EF_R16UI == rl->IndexStreamFormat())
+				if (EF_R16UI == rl.IndexStreamFormat())
 				{
 					all_is_index_16_bit = true;
 				}
 				else
 				{
-					BOOST_ASSERT(EF_R32UI == rl->IndexStreamFormat());
+					BOOST_ASSERT(EF_R32UI == rl.IndexStreamFormat());
 					all_is_index_16_bit = false;
 				}
 
 				{
-					GraphicsBufferPtr ib = rl->GetIndexStream();
-					GraphicsBufferPtr ib_cpu = rf.MakeIndexBuffer(BU_Static, EAH_CPU_Read, nullptr);
+					GraphicsBufferPtr const & ib = rl.GetIndexStream();
 					uint32_t size = ib->Size();
-					ib_cpu->Resize(size);
-					ib->CopyToBuffer(*ib_cpu);
+					GraphicsBufferPtr ib_cpu;
+					if (ib->AccessHint() & EAH_CPU_Read)
+					{
+						ib_cpu = ib;
+					}
+					else
+					{
+						auto& rf = Context::Instance().RenderFactoryInstance();
+						ib_cpu = rf.MakeIndexBuffer(BU_Static, EAH_CPU_Read, size, nullptr);
+						ib->CopyToBuffer(*ib_cpu);
+					}
 
 					merged_indices.resize(size);
 
@@ -1856,120 +2244,133 @@ namespace KlayGE
 
 			for (uint32_t mesh_index = 0; mesh_index < mesh_names.size(); ++ mesh_index)
 			{
-				StaticMesh const & mesh = *checked_pointer_cast<StaticMesh>(model->Subrenderable(mesh_index));
+				auto const& mesh = checked_cast<StaticMesh&>(*model.Mesh(mesh_index));
 
 				Convert(mesh_names[mesh_index], mesh.Name());
 				mtl_ids[mesh_index] = mesh.MaterialID();
 
+				mesh_lods[mesh_index] = mesh.NumLods();
+
 				pos_bbs[mesh_index] = mesh.PosBound();
 				tc_bbs[mesh_index] = mesh.TexcoordBound();
 
-				mesh_num_vertices[mesh_index] = mesh.NumVertices();
-				mesh_base_vertices[mesh_index] = mesh.StartVertexLocation();
-				mesh_num_triangles[mesh_index] = mesh.NumTriangles();
-				mesh_base_triangles[mesh_index] =  mesh.StartIndexLocation();
+				for (uint32_t lod = 0; lod < mesh_lods[mesh_index]; ++ lod)
+				{
+					mesh_num_vertices.push_back(mesh.NumVertices(lod));
+					mesh_base_vertices.push_back(mesh.StartVertexLocation(lod));
+					mesh_num_indices.push_back(mesh.NumIndices(lod));
+					mesh_base_indices.push_back(mesh.StartIndexLocation(lod));
+				}
 			}
+
+			mesh_base_vertices.push_back(mesh_base_vertices.back() + mesh_num_vertices.back());
+			mesh_base_indices.push_back(mesh_base_indices.back() + mesh_num_indices.back());
 		}
 
-		std::vector<Joint> joints;
-		shared_ptr<AnimationActionsType> actions;
-		shared_ptr<KeyFramesType> kfs;
+		std::vector<SceneNode const *> nodes;
+		model.RootNode()->Traverse([&nodes](SceneNode& node)
+			{
+				nodes.push_back(&node);
+				return true;
+			});
+
+		std::vector<Renderable const *> renderables;
+		for (uint32_t mesh_index = 0; mesh_index < mesh_names.size(); ++ mesh_index)
+		{
+			renderables.push_back(model.Mesh(mesh_index).get());
+		}
+
+		std::vector<JointComponent const*> joints;
+		std::shared_ptr<std::vector<Animation>> animations;
+		std::shared_ptr<std::vector<KeyFrameSet>> kfs;
 		uint32_t num_frame = 0;
 		uint32_t frame_rate = 0;
-		std::vector<shared_ptr<AABBKeyFrames> > frame_pos_bbs;
-		if (model->IsSkinned())
+		std::vector<std::shared_ptr<AABBKeyFrameSet>> frame_pos_bbs;
+		if (model.IsSkinned())
 		{
-			SkinnedModelPtr skinned = checked_pointer_cast<SkinnedModel>(model);
+			auto const& skinned_model = checked_cast<SkinnedModel const&>(model);
 
-			uint32_t num_joints = skinned->NumJoints();
+			uint32_t num_joints = skinned_model.NumJoints();
 			joints.resize(num_joints);
 			for (uint32_t i = 0; i < num_joints; ++ i)
 			{
-				Joint joint = skinned->GetJoint(i);
-
-				float flip = MathLib::sgn(joint.inverse_origin_scale);
-
-				joint.bind_scale = 1 / joint.inverse_origin_scale;
-				if (flip > 0)
-				{
-					std::pair<Quaternion, Quaternion> inv = MathLib::inverse(joint.inverse_origin_real, joint.inverse_origin_dual);
-					joint.bind_real = inv.first;
-					joint.bind_dual = inv.second;
-				}
-				else
-				{
-					float4x4 tmp_mat = MathLib::scaling(-joint.inverse_origin_scale, -joint.inverse_origin_scale, joint.inverse_origin_scale)
-						* MathLib::to_matrix(joint.inverse_origin_real)
-						* MathLib::translation(MathLib::udq_to_trans(joint.inverse_origin_real, joint.inverse_origin_dual));
-					tmp_mat = MathLib::inverse(tmp_mat);
-					tmp_mat(2, 0) = -tmp_mat(2, 0);
-					tmp_mat(2, 1) = -tmp_mat(2, 1);
-					tmp_mat(2, 2) = -tmp_mat(2, 2);
-
-					float3 scale;
-					Quaternion rot;
-					float3 trans;
-					MathLib::decompose(scale, rot, trans, tmp_mat);
-
-					joint.bind_real = rot;
-					joint.bind_dual = MathLib::quat_trans_to_udq(rot, trans);
-					joint.bind_scale = -scale.x();
-				}
-
-				joints[i] = joint;
+				joints[i] = skinned_model.GetJoint(i).get();
 			}
 
-			actions = skinned->GetActions();
+			animations = skinned_model.GetAnimations();
 
-			num_frame = skinned->NumFrames();
-			frame_rate = skinned->FrameRate();
+			num_frame = skinned_model.NumFrames();
+			frame_rate = skinned_model.FrameRate();
 
-			kfs = skinned->GetKeyFrames();
+			kfs = skinned_model.GetKeyFrameSets();
+
+			frame_pos_bbs.resize(mesh_names.size());
+			for (uint32_t mesh_index = 0; mesh_index < mesh_names.size(); ++ mesh_index)
+			{
+				auto& skinned_mesh = checked_cast<SkinnedMesh&>(*skinned_model.Mesh(mesh_index));
+				frame_pos_bbs[mesh_index] = skinned_mesh.GetFramePosBounds();
+			}
 		}
 
-		SaveModel(meshml_name, mtls, merged_ves, all_is_index_16_bit, merged_buffs, merged_indices,
-			mesh_names, mtl_ids, pos_bbs, tc_bbs,
-			mesh_num_vertices, mesh_base_vertices, mesh_num_triangles, mesh_base_triangles,
-			joints, actions, kfs, num_frame, frame_rate);
+		SaveModel(output_path.string(), mtls, merged_ves, all_is_index_16_bit, merged_buffs, merged_indices,
+			mesh_names, mtl_ids, mesh_lods, pos_bbs, tc_bbs,
+			mesh_num_vertices, mesh_base_vertices, mesh_num_indices, mesh_base_indices,
+			nodes, renderables,
+			joints, animations, kfs, num_frame, frame_rate, frame_pos_bbs);
+
+#if KLAYGE_IS_DEV_PLATFORM
+		if (need_conversion)
+		{
+			RenderDeviceCaps const * caps = nullptr;
+			if (Context::Instance().RenderFactoryValid())
+			{
+				RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+				caps = &rf.RenderEngineInstance().DeviceCaps();
+			}
+
+			Context::Instance().DevHelperInstance().ConvertModel(output_path.string(), "", model_name, caps);
+		}
+#endif
 	}
 
 
-	RenderableLightSourceProxy::RenderableLightSourceProxy(RenderModelPtr const & model, std::wstring const & name)
-			: StaticMesh(model, name)
+	RenderableLightSourceProxy::RenderableLightSourceProxy(std::wstring_view name)
+		: StaticMesh(name)
 	{
-		this->Technique(SyncLoadRenderEffect("LightSourceProxy.fxml")->TechniqueByName("LightSourceProxy"));
+		auto effect = SyncLoadRenderEffect("LightSourceProxy.fxml");
+		this->Technique(effect, effect->TechniqueByName("LightSourceProxy"));
 		effect_attrs_ |= EA_SimpleForward;
+
+		mtl_ = MakeSharedPtr<RenderMaterial>();
 	}
 
-	void RenderableLightSourceProxy::Technique(RenderTechniquePtr const & tech)
+	void RenderableLightSourceProxy::Technique(RenderEffectPtr const & effect, RenderTechnique* tech)
 	{
-		technique_ = simple_forward_tech_ = tech;
+		StaticMesh::Technique(effect, tech);
+
+		simple_forward_tech_ = tech;
 		if (tech)
 		{
-			mvp_param_ = technique_->Effect().ParameterByName("mvp");
-			model_param_ = technique_->Effect().ParameterByName("model");
-			pos_center_param_ = technique_->Effect().ParameterByName("pos_center");
-			pos_extent_param_ = technique_->Effect().ParameterByName("pos_extent");
-			tc_center_param_ = technique_->Effect().ParameterByName("tc_center");
-			tc_extent_param_ = technique_->Effect().ParameterByName("tc_extent");
+			light_is_projective_param_ = effect_->ParameterByName("light_is_projective");
+			projective_map_2d_tex_param_ = effect_->ParameterByName("projective_map_2d_tex");
+			projective_map_cube_tex_param_ = effect_->ParameterByName("projective_map_cube_tex");
 
-			light_color_param_ = technique_->Effect().ParameterByName("light_color");
-			light_is_projective_param_ = technique_->Effect().ParameterByName("light_is_projective");
-			projective_map_2d_tex_param_ = technique_->Effect().ParameterByName("projective_map_2d_tex");
-			projective_map_cube_tex_param_ = technique_->Effect().ParameterByName("projective_map_cube_tex");
+			select_mode_object_id_param_ = effect_->ParameterByName("object_id");
+			select_mode_tech_ = effect_->TechniqueByName("SelectModeTech");
 		}
 	}
 
-	void RenderableLightSourceProxy::Update()
+	void RenderableLightSourceProxy::AttachLightSrc(LightSourcePtr const & light)
 	{
-		if (light_color_param_)
-		{
-			*light_color_param_ = light_->Color();
-		}
+		light_ = light;
+	}
+
+	void RenderableLightSourceProxy::OnRenderBegin()
+	{
+		mtl_->Albedo(light_->Color());
 		if (light_is_projective_param_)
 		{
-			*light_is_projective_param_ = int2(light_->ProjectiveTexture() ? 1 : 0,
-				LightSource::LT_Point == light_->Type());
+			*light_is_projective_param_ = int2(light_->ProjectiveTexture() ? 1 : 0, LightSource::LT_Point == light_->Type());
 		}
 		if (LightSource::LT_Point == light_->Type())
 		{
@@ -1985,58 +2386,107 @@ namespace KlayGE
 				*projective_map_2d_tex_param_ = light_->ProjectiveTexture();
 			}
 		}
-	}
 
-	void RenderableLightSourceProxy::OnRenderBegin()
-	{
 		StaticMesh::OnRenderBegin();
-
-		Camera const & camera = Context::Instance().AppInstance().ActiveCamera();
-
-		float4x4 const & view = camera.ViewMatrix();
-		float4x4 const & proj = camera.ProjMatrix();
-
-		float4x4 mv = model_mat_ * view;
-		*mvp_param_ = mv * proj;
-		*model_param_ = model_mat_;
-
-		AABBox const & pos_bb = this->PosBound();
-		*pos_center_param_ = pos_bb.Center();
-		*pos_extent_param_ = pos_bb.HalfSize();
-
-		AABBox const & tc_bb = this->TexcoordBound();
-		*tc_center_param_ = float2(tc_bb.Center().x(), tc_bb.Center().y());
-		*tc_extent_param_ = float2(tc_bb.HalfSize().x(), tc_bb.HalfSize().y());
-	}
-
-	void RenderableLightSourceProxy::AttachLightSrc(LightSourcePtr const & light)
-	{
-		light_ = light;
 	}
 
 
-	RenderableCameraProxy::RenderableCameraProxy(RenderModelPtr const & model, std::wstring const & name)
-			: StaticMesh(model, name)
+	RenderableCameraProxy::RenderableCameraProxy(std::wstring_view name)
+		: StaticMesh(name)
 	{
-		this->Technique(SyncLoadRenderEffect("CameraProxy.fxml")->TechniqueByName("CameraProxy"));
+		auto effect = SyncLoadRenderEffect("CameraProxy.fxml");
+		this->Technique(effect, effect->TechniqueByName("CameraProxy"));
 		effect_attrs_ |= EA_SimpleForward;
+
+		mtl_ = MakeSharedPtr<RenderMaterial>();
+		mtl_->Albedo(float4(1, 1, 1, 1));
 	}
 
-	void RenderableCameraProxy::Technique(RenderTechniquePtr const & tech)
+	void RenderableCameraProxy::Technique(RenderEffectPtr const & effect, RenderTechnique* tech)
 	{
-		technique_ = simple_forward_tech_ = tech;
+		StaticMesh::Technique(effect, tech);
+
+		simple_forward_tech_ = tech;
 		if (tech)
 		{
-			mvp_param_ = technique_->Effect().ParameterByName("mvp");
-			pos_center_param_ = technique_->Effect().ParameterByName("pos_center");
-			pos_extent_param_ = technique_->Effect().ParameterByName("pos_extent");
-			tc_center_param_ = technique_->Effect().ParameterByName("tc_center");
-			tc_extent_param_ = technique_->Effect().ParameterByName("tc_extent");
+			select_mode_object_id_param_ = effect_->ParameterByName("object_id");
+			select_mode_tech_ = effect_->TechniqueByName("SelectModeTech");
 		}
 	}
 
 	void RenderableCameraProxy::AttachCamera(CameraPtr const & camera)
 	{
 		camera_ = camera;
+	}
+
+
+	RenderModelPtr LoadLightSourceProxyModel(LightSourcePtr const& light)
+	{
+		char const* mesh_name;
+		switch (light->Type())
+		{
+		case LightSource::LT_Ambient:
+			mesh_name = "AmbientLightProxy.glb";
+			break;
+
+		case LightSource::LT_Point:
+		case LightSource::LT_SphereArea:
+			mesh_name = "PointLightProxy.glb";
+			break;
+
+		case LightSource::LT_Directional:
+			mesh_name = "DirectionalLightProxy.glb";
+			break;
+
+		case LightSource::LT_Spot:
+			mesh_name = "SpotLightProxy.glb";
+			break;
+
+		case LightSource::LT_TubeArea:
+			mesh_name = "TubeLightProxy.glb";
+			break;
+
+		default:
+			KFL_UNREACHABLE("Invalid light type");
+		}
+
+		auto light_model = SyncLoadModel(mesh_name, EAH_GPU_Read | EAH_Immutable,
+			SceneNode::SOA_Cullable | SceneNode::SOA_Moveable | SceneNode::SOA_NotCastShadow, nullptr, CreateModelFactory<RenderModel>,
+			CreateMeshFactory<RenderableLightSourceProxy>);
+
+		for (uint32_t i = 0; i < light_model->NumMeshes(); ++i)
+		{
+			checked_pointer_cast<RenderableLightSourceProxy>(light_model->Mesh(i))->AttachLightSrc(light);
+		}
+
+		if (light->Type() == LightSource::LT_Spot)
+		{
+			float const radius = light->CosOuterInner().w();
+			light_model->RootNode()->TransformToParent(
+				MathLib::scaling(radius, radius, 1.0f) * light_model->RootNode()->TransformToParent());
+		}
+
+		return light_model;
+	}
+
+	RenderModelPtr LoadCameraProxyModel(CameraPtr const& camera)
+	{
+		auto camera_model = SyncLoadModel("CameraProxy.glb", EAH_GPU_Read | EAH_Immutable,
+			SceneNode::SOA_Cullable | SceneNode::SOA_Moveable | SceneNode::SOA_NotCastShadow, nullptr, CreateModelFactory<RenderModel>,
+			CreateMeshFactory<RenderableCameraProxy>);
+
+		for (uint32_t i = 0; i < camera_model->NumMeshes(); ++i)
+		{
+			checked_pointer_cast<RenderableCameraProxy>(camera_model->Mesh(i))->AttachCamera(camera);
+		}
+
+		camera_model->RootNode()->OnMainThreadUpdate().Connect([&camera](SceneNode& node, float app_time, float elapsed_time) {
+			KFL_UNUSED(app_time);
+			KFL_UNUSED(elapsed_time);
+
+			node.TransformToParent(camera->InverseViewMatrix());
+		});
+
+		return camera_model;
 	}
 }

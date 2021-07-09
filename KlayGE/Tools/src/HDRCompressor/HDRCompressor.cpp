@@ -1,35 +1,26 @@
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Half.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Texture.hpp>
 #include <KlayGE/TexCompressionBC.hpp>
 #include <KlayGE/ResLoader.hpp>
+#include <KFL/CXX17/filesystem.hpp>
 
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <cstring>
-#if defined(KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT) || defined(KLAYGE_TR2_LIBRARY_FILESYSTEM_V3_SUPPORT)
-	#include <filesystem>
-	namespace KlayGE
-	{
-		namespace filesystem = std::tr2::sys;
-	}
-#else
-	#include <boost/filesystem.hpp>
-	namespace KlayGE
-	{
-		namespace filesystem = boost::filesystem;
-	}
-#endif
+
 #include <boost/assert.hpp>
 
 using namespace std;
+
 namespace
 {
 	using namespace KlayGE;
 
-	float3 const lum_weight(0.2126f, 0.7152f, 0.0722f);
+	float3 constexpr lum_weight(0.2126f, 0.7152f, 0.0722f);
 
 	float CalcLum(float r, float g, float b)
 	{
@@ -198,20 +189,19 @@ namespace
 		uint32_t c_width = std::max(width / 2, 1U);
 		uint32_t c_height = std::max(height / 2, 1U);
 
-		TexCompressionPtr tex_codec;
+		std::unique_ptr<TexCompression> tex_codec;
 		switch (c_format)
 		{
 		case EF_BC3:
-			tex_codec = MakeSharedPtr<TexCompressionBC3>();
+			tex_codec = MakeUniquePtr<TexCompressionBC3>();
 			break;
 
 		case EF_BC5:
-			tex_codec = MakeSharedPtr<TexCompressionBC5>();
+			tex_codec = MakeUniquePtr<TexCompressionBC5>();
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Compression formats other than BC3 and BC5 are not supported");
 		}
 
 		std::vector<uint8_t> c_data_uncom(c_width * c_height * 4);
@@ -301,14 +291,16 @@ namespace
 	void CompressHDR(std::string const & in_file,
 		std::string const & out_y_file, std::string const & out_c_file, ElementFormat y_format, ElementFormat c_format)
 	{
-		Texture::TextureType in_type;
-		uint32_t in_width, in_height, in_depth;
-		uint32_t in_num_mipmaps;
-		uint32_t in_array_size;
-		ElementFormat in_format;
-		std::vector<ElementInitData> in_data;
-		std::vector<uint8_t> in_data_block;
-		LoadTexture(in_file, in_type, in_width, in_height, in_depth, in_num_mipmaps, in_array_size, in_format, in_data, in_data_block);
+		TexturePtr in_tex = LoadSoftwareTexture(in_file);
+		auto const in_type = in_tex->Type();
+		auto const in_width = in_tex->Width(0);
+		auto const in_height = in_tex->Height(0);
+		auto const in_depth = in_tex->Depth(0);
+		auto in_num_mipmaps = in_tex->NumMipMaps();
+		auto const in_array_size = in_tex->ArraySize();
+		auto in_format = in_tex->Format();
+		auto in_data = checked_cast<SoftwareTexture&>(*in_tex).SubresourceData();
+		auto in_data_block = checked_cast<SoftwareTexture&>(*in_tex).DataBlock();
 
 		if (EF_ABGR16F == in_format)
 		{
@@ -374,14 +366,17 @@ namespace
 
 		std::vector<ElementInitData> y_data(in_data.size());
 		std::vector<ElementInitData> c_data(in_data.size());
-		std::vector<std::vector<uint8_t> > y_data_block(in_data.size());
-		std::vector<std::vector<uint8_t> > c_data_block(in_data.size());
+		std::vector<std::vector<uint8_t>> y_data_block(in_data.size());
+		std::vector<std::vector<uint8_t>> c_data_block(in_data.size());
 		for (size_t i = 0; i < in_data.size(); ++ i)
 		{
 			CompressHDRSubresource(y_data[i], c_data[i], y_data_block[i], c_data_block[i], in_data[i], y_format, c_format);
 		}
 
-		SaveTexture(out_y_file, in_type, in_width, in_height, in_depth, in_num_mipmaps, in_array_size, y_format, y_data);
+		TexturePtr out_y_tex = MakeSharedPtr<SoftwareTexture>(in_type, in_width, in_height, in_depth,
+			in_num_mipmaps, in_array_size, y_format, true);
+		out_y_tex->CreateHWResource(y_data, nullptr);
+		SaveTexture(out_y_tex, out_y_file);
 
 		uint32_t c_width = std::max(in_width / 2, 1U);
 		uint32_t c_height = std::max(in_height / 2, 1U);
@@ -390,7 +385,10 @@ namespace
 			c_width = (c_width + 3) & ~3;
 			c_height = (c_height + 3) & ~3;
 		}
-		SaveTexture(out_c_file, in_type, c_width, c_height, in_depth, in_num_mipmaps, in_array_size, c_format, c_data);
+		TexturePtr out_c_tex = MakeSharedPtr<SoftwareTexture>(in_type, c_width, c_height, in_depth,
+			in_num_mipmaps, in_array_size, c_format, true);
+		out_c_tex->CreateHWResource(c_data, nullptr);
+		SaveTexture(out_c_tex, out_c_file);
 
 		float mse = 0;
 		int n = 0;
@@ -437,7 +435,7 @@ int main(int argc, char* argv[])
 
 	if (argc < 2)
 	{
-		cout << "使用方法: HDRCompressor xxx.dds [R16 | R16F] [BC5 | BC3]" << endl;
+		cout << "Usage: HDRCompressor xxx.dds [R16 | R16F] [BC5 | BC3]" << endl;
 		return 1;
 	}
 
@@ -462,19 +460,14 @@ int main(int argc, char* argv[])
 	}
 
 	filesystem::path output_path(argv[1]);
-#ifdef KLAYGE_TR2_LIBRARY_FILESYSTEM_V2_SUPPORT
-	std::string y_file = output_path.stem() + "_y" + output_path.extension();
-	std::string c_file = output_path.stem() + "_c" + output_path.extension();
-#else
 	std::string y_file = output_path.stem().string() + "_y" + output_path.extension().string();
 	std::string c_file = output_path.stem().string() + "_c" + output_path.extension().string();
-#endif
 
 	CompressHDR(argv[1], y_file, c_file, y_format, c_format);
 
 	cout << "HDR texture is compressed into " << y_file << " and " << c_file << endl;
 
-	ResLoader::Destroy();
+	Context::Destroy();
 
 	return 0;
 }

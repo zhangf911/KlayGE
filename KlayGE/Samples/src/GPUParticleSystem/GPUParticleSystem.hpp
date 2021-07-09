@@ -11,8 +11,6 @@ class GPUParticleSystemApp : public KlayGE::App3DFramework
 public:
 	GPUParticleSystemApp();
 
-	bool ConfirmDevice() const;
-
 private:
 	void OnCreate();
 	void OnResize(KlayGE::uint32_t width, KlayGE::uint32_t height);
@@ -24,15 +22,17 @@ private:
 
 	KlayGE::FontPtr font_;
 
-	KlayGE::SceneObjectPtr particles_;
-	KlayGE::SceneObjectPtr terrain_;
+	KlayGE::SceneNodePtr particles_;
+	KlayGE::RenderablePtr particles_renderable_;
+	KlayGE::SceneNodePtr terrain_;
 
-	KlayGE::FirstPersonCameraController fpcController_;
+	KlayGE::TrackballCameraController tb_controller_;
 
 	KlayGE::TexturePtr scene_tex_;
 	KlayGE::FrameBufferPtr scene_buffer_;
 
 	KlayGE::TexturePtr fog_tex_;
+	KlayGE::ShaderResourceViewPtr fog_srv_;
 	KlayGE::FrameBufferPtr fog_buffer_;
 
 	KlayGE::PostProcessPtr blend_pp_;

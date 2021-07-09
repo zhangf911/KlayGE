@@ -1,11 +1,9 @@
 #include <KlayGE/KlayGE.hpp>
 #include <KFL/Util.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/GraphicsBuffer.hpp>
 #include <KlayGE/Font.hpp>
 #include <KlayGE/Renderable.hpp>
-#include <KlayGE/RenderableHelper.hpp>
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderEffect.hpp>
 #include <KlayGE/FrameBuffer.hpp>
@@ -15,23 +13,23 @@
 #include <KlayGE/RenderSettings.hpp>
 #include <KlayGE/Mesh.hpp>
 #include <KlayGE/Texture.hpp>
-#include <KlayGE/SceneObjectHelper.hpp>
+#include <KlayGE/SceneNode.hpp>
+#include <KlayGE/SkyBox.hpp>
 #include <KlayGE/PostProcess.hpp>
 #include <KlayGE/Light.hpp>
 #include <KlayGE/Camera.hpp>
 #include <KlayGE/UI.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/InputFactory.hpp>
+#include <KlayGE/SSSBlur.hpp>
+#include <KlayGE/DeferredRenderingLayer.hpp>
 
-#include <vector>
+#include <iterator>
 #include <sstream>
+#include <vector>
 
 #include "SampleCommon.hpp"
 #include "SSSSS.hpp"
-#include "SubsurfaceMesh.hpp"
-#include "SSSBlur.hpp"
-
-KlayGE::uint32_t const SHADOW_MAP_SIZE = 512;
 
 using namespace KlayGE;
 
@@ -50,6 +48,10 @@ namespace
 
 int SampleMain()
 {
+	ContextCfg cfg = Context::Instance().Config();
+	cfg.deferred_rendering = true;
+	Context::Instance().Config(cfg);
+
 	SSSSSApp app;
 	app.Create();
 	app.Run();
@@ -65,123 +67,86 @@ SSSSSApp::SSSSSApp()
 	ResLoader::Instance().AddPath("../../Samples/media/SSSSS");
 }
 
-bool SSSSSApp::ConfirmDevice() const
-{
-	RenderDeviceCaps const & caps = Context::Instance().RenderFactoryInstance().RenderEngineInstance().DeviceCaps();
-	if (caps.max_shader_model < 2)
-	{
-		return false;
-	}
-
-	return true;
-}
-
 void SSSSSApp::OnCreate()
 {
+	auto scene_model = ASyncLoadModel("ScifiRoom/Scifi.3DS", EAH_GPU_Read | EAH_Immutable,
+		SceneNode::SOA_Cullable, AddToSceneRootHelper);
+	auto sss_model = ASyncLoadModel("Infinite-Level_02.glb", EAH_GPU_Read | EAH_Immutable,
+		SceneNode::SOA_Cullable,
+		[](RenderModel& model)
+		{
+			model.RootNode()->TransformToParent(MathLib::translation(0.0f, 5.0f, 0.0f));
+			AddToSceneRootHelper(model);
+		});
+	TexturePtr c_cube = ASyncLoadTexture("Lake_CraterLake03_filtered_c.dds",
+		EAH_GPU_Read | EAH_Immutable);
+	TexturePtr y_cube = ASyncLoadTexture("Lake_CraterLake03_filtered_y.dds",
+		EAH_GPU_Read | EAH_Immutable);
+
 	font_ = SyncLoadFont("gkai00mp.kfont");
+
+	deferred_rendering_ = Context::Instance().DeferredRenderingLayerInstance();
 	  
-	this->LookAt(float3(0.5f, 0, -0.5f), float3(0, 0, 0));
-	this->Proj(0.05f, 20.0f);
+	this->LookAt(float3(0.5f, 5, -0.5f), float3(0, 5, 0));
+	this->Proj(0.05f, 200.0f);
+
+	auto& root_node = Context::Instance().SceneManagerInstance().SceneRootNode();
+
+	AmbientLightSourcePtr ambient_light = MakeSharedPtr<AmbientLightSource>();
+	ambient_light->SkylightTex(y_cube, c_cube);
+	ambient_light->Color(float3(0.3f, 0.3f, 0.3f));
+	root_node.AddComponent(ambient_light);
 	
-	light_ = MakeSharedPtr<SpotLightSource>();
-	light_->Attrib(0);
-	light_->Color(float3(1.0f, 1.0f, 1.0f));
-	light_->Falloff(float3(1, 0, 1));
-	light_->Position(float3(0, 0, -2));
-	light_->Direction(float3(0, 0, 1));
-	light_->OuterAngle(PI / 12);
-	light_->InnerAngle(PI / 16);
-	light_->AddToSceneManager();
+	auto light = MakeSharedPtr<SpotLightSource>();
+	light->Attrib(0);
+	light->Color(float3(5.0f, 5.0f, 5.0f));
+	light->Falloff(float3(1, 1, 0));
+	light->OuterAngle(PI / 6);
+	light->InnerAngle(PI / 8);
 
-	light_proxy_ = MakeSharedPtr<SceneObjectLightSourceProxy>(light_);
-	checked_pointer_cast<SceneObjectLightSourceProxy>(light_proxy_)->Scaling(0.1f, 0.1f, 0.1f);
-	light_proxy_->AddToSceneManager();
+	auto light_proxy = LoadLightSourceProxyModel(light);
+	light_proxy->RootNode()->TransformToParent(MathLib::scaling(0.1f, 0.1f, 0.1f) * light_proxy->RootNode()->TransformToParent());
 
-	subsurface_obj_ = MakeSharedPtr<MySceneObjectHelper>("Infinite-Level_02.meshml");
-	subsurface_obj_->AddToSceneManager();
+	auto light_node = MakeSharedPtr<SceneNode>(SceneNode::SOA_Cullable | SceneNode::SOA_Moveable);
+	light_node->AddComponent(light);
 
-	RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-	RenderEngine& re = rf.RenderEngineInstance();
-	RenderDeviceCaps const & caps = re.DeviceCaps();
+	light_camera_ = MakeSharedPtr<Camera>();
+	auto light_camera_node = MakeSharedPtr<SceneNode>(SceneNode::SOA_Cullable | SceneNode::SOA_Moveable | SceneNode::SOA_NotCastShadow);
+	light_camera_node->AddComponent(light_camera_);
+	light_controller_.AttachCamera(*light_camera_);
+	light_controller_.Scalers(0.01f, 0.005f);
+	root_node.AddChild(light_camera_node);
 
-	ElementFormat sm_fmt;
-	if (caps.pack_to_rgba_required)
-	{
-		if (caps.rendertarget_format_support(EF_ABGR8, 1, 0))
-		{
-			sm_fmt = EF_ABGR8;
-		}
-		else
-		{
-			BOOST_ASSERT(caps.rendertarget_format_support(EF_ARGB8, 1, 0));
-			sm_fmt = EF_ARGB8;
-		}
-	}
-	else
-	{
-		if (caps.rendertarget_format_support(EF_R32F, 1, 0))
-		{
-			sm_fmt = EF_R32F;
-		}
-		else
-		{
-			BOOST_ASSERT(caps.rendertarget_format_support(EF_R16F, 1, 0));
-			sm_fmt = EF_R16F;
-		}
-	}
+	light_node->AddChild(light_proxy->RootNode());
+	light_node->OnMainThreadUpdate().Connect([this](SceneNode& node, float app_time, float elapse_time) {
+		KFL_UNUSED(app_time);
+		KFL_UNUSED(elapse_time);
 
-	ElementFormat ds_fmt;
-	if (caps.rendertarget_format_support(EF_D24S8, 1, 0))
-	{
-		ds_fmt = EF_D24S8;
-	}
-	else
-	{
-		BOOST_ASSERT(caps.rendertarget_format_support(EF_D16, 1, 0));
-		ds_fmt = EF_D16;
-	}
+		float3 const light_pos = float3(0, 5, 0) - light_camera_->ForwardVec() * 2.0f;
+		node.TransformToParent(MathLib::inverse(MathLib::look_at_lh(light_pos, light_pos + light_camera_->ForwardVec())));
+	});
+	root_node.AddChild(light_node);
 
-	shadow_tex_ = rf.MakeTexture2D(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1, 1, sm_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-	shadow_ds_tex_ = rf.MakeTexture2D(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1, 1, ds_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
+	RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
 
-	depth_ls_fb_ = rf.MakeFrameBuffer();
-	depth_ls_fb_->Attach(FrameBuffer::ATT_Color0, rf.Make2DRenderView(*shadow_tex_, 0, 1, 0));
-	depth_ls_fb_->Attach(FrameBuffer::ATT_DepthStencil, rf.Make2DDepthStencilRenderView(*shadow_ds_tex_, 0, 1, 0));
-	depth_ls_fb_->GetViewport()->camera = light_->SMCamera(0);
-
-	scene_camera_ = re.DefaultFrameBuffer()->GetViewport()->camera;
-
-	color_fb_ = rf.MakeFrameBuffer();
-	color_fb_->GetViewport()->camera = scene_camera_;
-
-	sss_fb_ = rf.MakeFrameBuffer();
-	sss_fb_->GetViewport()->camera = scene_camera_;
-
-	sss_blur_pp_ = MakeSharedPtr<SSSBlurPP>();
-	translucency_pp_ = SyncLoadPostProcess("Translucency.ppml", "Translucency");
-	translucency_pp_->SetParam(3, float3(light_->Color()));
+	scene_camera_ = re.DefaultFrameBuffer()->Viewport()->Camera();
 
 	obj_controller_.AttachCamera(*scene_camera_);
 	obj_controller_.Scalers(0.01f, 0.005f);
 
-	light_camera_ = MakeSharedPtr<Camera>();
-	light_controller_.AttachCamera(*light_camera_);
-	light_controller_.Scalers(0.01f, 0.005f);
-	light_camera_->ViewParams(light_->SMCamera(0)->EyePos(), light_->SMCamera(0)->LookAt(), light_->SMCamera(0)->UpVec());
-	light_camera_->ProjParams(light_->SMCamera(0)->FOV(), light_->SMCamera(0)->Aspect(), light_->SMCamera(0)->NearPlane(), light_->SMCamera(0)->FarPlane());
-
-	depth_to_linear_pp_ = SyncLoadPostProcess("Depth.ppml", "DepthToLinear");
-	copy_pp_ = SyncLoadPostProcess("Copy.ppml", "copy");
-
 	InputEngine& inputEngine(Context::Instance().InputFactoryInstance().InputEngineInstance());
 	InputActionMap actionMap;
-	actionMap.AddActions(actions, actions + sizeof(actions) / sizeof(actions[0]));
+	actionMap.AddActions(actions, actions + std::size(actions));
 
 	action_handler_t input_handler = MakeSharedPtr<input_signal>();
-	input_handler->connect(KlayGE::bind(&SSSSSApp::InputHandler, this, KlayGE::placeholders::_1, KlayGE::placeholders::_2));
+	input_handler->Connect(
+		[this](InputEngine const & sender, InputAction const & action)
+		{
+			this->InputHandler(sender, action);
+		});
 	inputEngine.ActionMap(actionMap, input_handler);
 
-	UIManager::Instance().Load(ResLoader::Instance().Open("SSSSS.uiml"));
+	UIManager::Instance().Load(*ResLoader::Instance().Open("SSSSS.uiml"));
 	dialog_params_ = UIManager::Instance().GetDialog("Parameters");
 	id_sss_ = dialog_params_->IDFromName("SSS");
 	id_sss_strength_static_ = dialog_params_->IDFromName("SSSStrengthStatic");
@@ -192,110 +157,48 @@ void SSSSSApp::OnCreate()
 	id_translucency_strength_static_ = dialog_params_->IDFromName("TranslucencyStrengthStatic");
 	id_translucency_strength_slider_ = dialog_params_->IDFromName("TranslucencyStrengthSlider");
 
-	dialog_params_->Control<UICheckBox>(id_sss_)->OnChangedEvent().connect(KlayGE::bind(&SSSSSApp::SSSHandler, this, KlayGE::placeholders::_1));
+	dialog_params_->Control<UICheckBox>(id_sss_)->OnChangedEvent().Connect(
+		[this](UICheckBox const & sender)
+		{
+			this->SSSHandler(sender);
+		});
 	this->SSSHandler(*dialog_params_->Control<UICheckBox>(id_sss_));
-	dialog_params_->Control<UISlider>(id_sss_strength_slider_)->OnValueChangedEvent().connect(KlayGE::bind(&SSSSSApp::SSSStrengthChangedHandler, this, KlayGE::placeholders::_1));
+	dialog_params_->Control<UISlider>(id_sss_strength_slider_)->OnValueChangedEvent().Connect(
+		[this](UISlider const & sender)
+		{
+			this->SSSStrengthChangedHandler(sender);
+		});
 	this->SSSStrengthChangedHandler(*dialog_params_->Control<UISlider>(id_sss_strength_slider_));
-	dialog_params_->Control<UISlider>(id_sss_correction_slider_)->OnValueChangedEvent().connect(KlayGE::bind(&SSSSSApp::SSSCorrectionChangedHandler, this, KlayGE::placeholders::_1));
+	dialog_params_->Control<UISlider>(id_sss_correction_slider_)->OnValueChangedEvent().Connect(
+		[this](UISlider const & sender)
+		{
+			this->SSSCorrectionChangedHandler(sender);
+		});
 	this->SSSCorrectionChangedHandler(*dialog_params_->Control<UISlider>(id_sss_correction_slider_));
-	dialog_params_->Control<UICheckBox>(id_translucency_)->OnChangedEvent().connect(KlayGE::bind(&SSSSSApp::TranslucencyHandler, this, KlayGE::placeholders::_1));
+	dialog_params_->Control<UICheckBox>(id_translucency_)->OnChangedEvent().Connect(
+		[this](UICheckBox const & sender)
+		{
+			this->TranslucencyHandler(sender);
+		});
 	this->TranslucencyHandler(*dialog_params_->Control<UICheckBox>(id_translucency_));
-	dialog_params_->Control<UISlider>(id_translucency_strength_slider_)->OnValueChangedEvent().connect(KlayGE::bind(&SSSSSApp::TranslucencyStrengthChangedHandler, this, KlayGE::placeholders::_1));
+	dialog_params_->Control<UISlider>(id_translucency_strength_slider_)->OnValueChangedEvent().Connect(
+		[this](UISlider const & sender)
+		{
+			this->TranslucencyStrengthChangedHandler(sender);
+		});
 	this->TranslucencyStrengthChangedHandler(*dialog_params_->Control<UISlider>(id_translucency_strength_slider_));
+
+	auto skybox = MakeSharedPtr<RenderableSkyBox>();
+	skybox->CompressedCubeMap(y_cube, c_cube);
+	root_node.AddChild(MakeSharedPtr<SceneNode>(MakeSharedPtr<RenderableComponent>(skybox), SceneNode::SOA_NotCastShadow));
 }
 
 void SSSSSApp::OnResize(uint32_t width, uint32_t height)
 {
 	App3DFramework::OnResize(width, height);
 
-	RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-	RenderEngine& re = rf.RenderEngineInstance();
-	RenderDeviceCaps const & caps = re.DeviceCaps();
-
-	ElementFormat depth_fmt;
-	if (caps.pack_to_rgba_required)
-	{
-		if (caps.rendertarget_format_support(EF_ABGR8, 1, 0))
-		{
-			depth_fmt = EF_ABGR8;
-		}
-		else
-		{
-			BOOST_ASSERT(caps.rendertarget_format_support(EF_ARGB8, 1, 0));
-			depth_fmt = EF_ARGB8;
-		}
-	}
-	else
-	{
-		if (caps.rendertarget_format_support(EF_R32F, 1, 0))
-		{
-			depth_fmt = EF_R32F;
-		}
-		else
-		{
-			BOOST_ASSERT(caps.rendertarget_format_support(EF_R16F, 1, 0));
-			depth_fmt = EF_R16F;
-		}
-	}
-
-	ElementFormat ds_fmt;
-	if (caps.rendertarget_format_support(EF_D24S8, 1, 0))
-	{
-		ds_fmt = EF_D24S8;
-	}
-	else
-	{
-		BOOST_ASSERT(caps.rendertarget_format_support(EF_D16, 1, 0));
-		ds_fmt = EF_D16;
-	}
-
-	ElementFormat shading_fmt;
-	if (caps.fp_color_support && caps.rendertarget_format_support(EF_ABGR16F, 1, 0))
-	{
-		shading_fmt = EF_ABGR16F;
-	}
-	else
-	{
-		if (caps.rendertarget_format_support(EF_ABGR8, 1, 0))
-		{
-			shading_fmt = EF_ABGR8;
-		}
-		else
-		{
-			BOOST_ASSERT(caps.rendertarget_format_support(EF_ARGB8, 1, 0));
-			shading_fmt = EF_ARGB8;
-		}
-	}
-
-	shading_tex_ = rf.MakeTexture2D(width, height, 1, 1, shading_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-	normal_tex_ = rf.MakeTexture2D(width, height, 1, 1, shading_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-	albedo_tex_ = rf.MakeTexture2D(width, height, 1, 1, shading_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-	ds_tex_ = rf.MakeTexture2D(width, height, 1, 1, ds_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-	depth_tex_ = rf.MakeTexture2D(width, height, 1, 1, depth_fmt, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-
-	RenderViewPtr ds_view = rf.Make2DDepthStencilRenderView(*ds_tex_, 0, 1, 0);
-
-	color_fb_->Attach(FrameBuffer::ATT_Color0, rf.Make2DRenderView(*normal_tex_, 0, 1, 0));
-	color_fb_->Attach(FrameBuffer::ATT_Color1, rf.Make2DRenderView(*albedo_tex_, 0, 1, 0));
-	color_fb_->Attach(FrameBuffer::ATT_Color2, rf.Make2DRenderView(*shading_tex_, 0, 1, 0));
-	color_fb_->Attach(FrameBuffer::ATT_DepthStencil, ds_view);
-
-	sss_fb_->Attach(FrameBuffer::ATT_Color0, rf.Make2DRenderView(*shading_tex_, 0, 1, 0));
-	sss_fb_->Attach(FrameBuffer::ATT_DepthStencil, ds_view);
-
-	sss_blur_pp_->OutputFrameBuffer()->Attach(FrameBuffer::ATT_DepthStencil, ds_view);
-	sss_blur_pp_->InputPin(0, shading_tex_);
-	sss_blur_pp_->InputPin(1, depth_tex_);
-	sss_blur_pp_->OutputPin(0, shading_tex_);
-
-	translucency_pp_->InputPin(0, normal_tex_);
-	translucency_pp_->InputPin(1, albedo_tex_);
-	translucency_pp_->InputPin(2, depth_tex_);
-	translucency_pp_->InputPin(3, shadow_tex_);
-	translucency_pp_->OutputPin(0, shading_tex_);
-	translucency_pp_->OutputFrameBuffer()->Attach(FrameBuffer::ATT_DepthStencil, ds_view);
-
-	copy_pp_->InputPin(0, shading_tex_);
+	RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+	deferred_rendering_->SetupViewport(0, re.CurFrameBuffer(), 0);
 
 	UIManager::Instance().SettleCtrls();
 }
@@ -312,23 +215,23 @@ void SSSSSApp::InputHandler(InputEngine const & /*sender*/, InputAction const & 
 
 void SSSSSApp::SSSHandler(KlayGE::UICheckBox const & sender)
 {
-	sss_on_ = sender.GetChecked();
+	deferred_rendering_->SSSEnabled(sender.GetChecked());
 }
 
 void SSSSSApp::SSSStrengthChangedHandler(KlayGE::UISlider const & sender)
 {
 	float strength = sender.GetValue() * 0.1f;
-	sss_blur_pp_->SetParam(0, strength);
+	deferred_rendering_->SSSStrength(strength);
 
 	std::wostringstream stream;
-	stream << L"SSS strength: " << strength;
+	stream << L"SSS Strength: " << strength;
 	dialog_params_->Control<UIStatic>(id_sss_strength_static_)->SetText(stream.str());
 }
 
 void SSSSSApp::SSSCorrectionChangedHandler(KlayGE::UISlider const & sender)
 {
 	float correction = sender.GetValue() * 0.1f;
-	sss_blur_pp_->SetParam(1, correction);
+	deferred_rendering_->SSSCorrection(correction);
 
 	std::wostringstream stream;
 	stream << L"SSS Correction: " << correction;
@@ -337,16 +240,16 @@ void SSSSSApp::SSSCorrectionChangedHandler(KlayGE::UISlider const & sender)
 
 void SSSSSApp::TranslucencyHandler(KlayGE::UICheckBox const & sender)
 {
-	translucency_on_ = sender.GetChecked();
+	deferred_rendering_->TranslucencyEnabled(sender.GetChecked());
 }
 
 void SSSSSApp::TranslucencyStrengthChangedHandler(KlayGE::UISlider const & sender)
 {
 	float strength = static_cast<float>(sender.GetValue());
-	translucency_pp_->SetParam(4, strength);
+	deferred_rendering_->TranslucencyStrength(strength);
 
 	std::wostringstream stream;
-	stream << L"Translucency strength: " << strength;
+	stream << L"Translucency Strength: " << strength;
 	dialog_params_->Control<UIStatic>(id_translucency_strength_static_)->SetText(stream.str());
 }
 
@@ -360,83 +263,17 @@ void SSSSSApp::DoUpdateOverlay()
  
 	font_->RenderText(0, 0, Color(1, 1, 0, 1), L"Screen Space Sub Surface Scattering", 16);
 	font_->RenderText(0, 18, Color(1, 1, 0, 1), stream.str(), 16);
+
+	uint32_t const num_loading_res = ResLoader::Instance().NumLoadingResources();
+	if (num_loading_res > 0)
+	{
+		stream.str(L"");
+		stream << "Loading " << num_loading_res << " resources...";
+		font_->RenderText(100, 300, Color(1, 0, 0, 1), stream.str(), 48);
+	}
 }
 
 uint32_t SSSSSApp::DoUpdate(uint32_t pass)
 {
-	RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
- 
-	switch (pass)
-	{
-	case 0:
-		light_proxy_->Visible(false);
-		subsurface_obj_->Visible(true);
-		checked_pointer_cast<SubsurfaceMesh>(subsurface_obj_->GetRenderable())->Pass(PT_GenShadowMap);
-
-		light_->Position(-light_camera_->ForwardVec() * 2.0f);
-		light_->Direction(light_camera_->ForwardVec());
-
-		re.BindFrameBuffer(depth_ls_fb_);
-		re.CurFrameBuffer()->Clear(FrameBuffer::CBM_Color | FrameBuffer::CBM_Depth | FrameBuffer::CBM_Stencil,
-			Color(0.0f, 0.0f, 0.0f, 0.0f), 1.0f, 0);
-		return App3DFramework::URV_NeedFlush;
-	
-	case 1:
-		light_proxy_->Visible(false);
-		subsurface_obj_->Visible(true);
-		checked_pointer_cast<SubsurfaceMesh>(subsurface_obj_->GetRenderable())->Pass(PT_OpaqueShading);
-
-		{
-			float q = light_->SMCamera(0)->FarPlane() / (light_->SMCamera(0)->FarPlane() - light_->SMCamera(0)->NearPlane());
-			float4 near_q_far(light_->SMCamera(0)->NearPlane() * q, q, light_->SMCamera(0)->FarPlane(), 1 / light_->SMCamera(0)->FarPlane());
-			depth_to_linear_pp_->SetParam(0, near_q_far);
-			depth_to_linear_pp_->InputPin(0, shadow_ds_tex_);
-			depth_to_linear_pp_->OutputPin(0, shadow_tex_);
-			depth_to_linear_pp_->Apply();
-		}
-
-		re.BindFrameBuffer(color_fb_);
-		checked_pointer_cast<MySceneObjectHelper>(subsurface_obj_)->LightPosition(light_->Position());
-		checked_pointer_cast<MySceneObjectHelper>(subsurface_obj_)->LightColor(light_->Color());
-		checked_pointer_cast<MySceneObjectHelper>(subsurface_obj_)->EyePosition(scene_camera_->EyePos());
-		re.CurFrameBuffer()->Clear(FrameBuffer::CBM_Color | FrameBuffer::CBM_Depth | FrameBuffer::CBM_Stencil,
-			Color(0.0f, 0.0f, 0.0f, 0), 1.0f, 0);
-		return App3DFramework::URV_NeedFlush;
-
-	case 2:
-		light_proxy_->Visible(true);
-		subsurface_obj_->Visible(false);
-
-		{
-			float q = scene_camera_->FarPlane() / (scene_camera_->FarPlane() - scene_camera_->NearPlane());
-			float4 near_q_far(scene_camera_->NearPlane() * q, q, scene_camera_->FarPlane(), 1 / scene_camera_->FarPlane());
-			depth_to_linear_pp_->SetParam(0, near_q_far);
-			depth_to_linear_pp_->InputPin(0, ds_tex_);
-			depth_to_linear_pp_->OutputPin(0, depth_tex_);
-			depth_to_linear_pp_->Apply();
-		}
-
-		re.BindFrameBuffer(sss_fb_);
-
-		if (sss_on_)
-		{
-			sss_blur_pp_->Apply();
-		}
-
-		if (translucency_on_)
-		{
-			translucency_pp_->SetParam(0, scene_camera_->InverseViewMatrix() * light_->SMCamera(0)->ViewProjMatrix());
-			translucency_pp_->SetParam(1, scene_camera_->InverseProjMatrix());
-			translucency_pp_->SetParam(2, MathLib::transform_coord(light_->Position(), scene_camera_->ViewMatrix()));
-			translucency_pp_->SetParam(5, scene_camera_->FarPlane());
-			translucency_pp_->SetParam(6, light_->SMCamera(0)->FarPlane());
-			translucency_pp_->Apply();
-		}
-
-		return App3DFramework::URV_NeedFlush;
-
-	default:
-		copy_pp_->Apply();
-		return App3DFramework::URV_Finished;
-	}
+	return deferred_rendering_->Update(pass);
 }

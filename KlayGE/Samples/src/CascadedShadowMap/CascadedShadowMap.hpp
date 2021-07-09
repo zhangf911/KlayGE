@@ -11,8 +11,6 @@ class CascadedShadowMapApp : public KlayGE::App3DFramework
 public:
 	CascadedShadowMapApp();
 
-	bool ConfirmDevice() const;
-
 private:
 	void OnCreate();
 
@@ -29,13 +27,11 @@ private:
 
 	KlayGE::FontPtr font_;
 
-	KlayGE::SceneObjectPtr sky_box_;
-
 	KlayGE::FirstPersonCameraController fpcController_;
 	KlayGE::TrackballCameraController light_controller_;
-	KlayGE::Camera light_ctrl_camera_;
+	KlayGE::CameraPtr light_ctrl_camera_;
 
-	KlayGE::DeferredRenderingLayerPtr deferred_rendering_;
+	KlayGE::DeferredRenderingLayer* deferred_rendering_;
 
 	KlayGE::UIDialogPtr dialog_;
 
@@ -44,8 +40,6 @@ private:
 	int id_pssm_factor_static_;
 	int id_pssm_factor_slider_;
 	int id_ctrl_camera_;
-
-	KlayGE::SunLightSourcePtr sun_light_;
 
 	KlayGE::uint32_t num_cascades_;
 	float pssm_factor_;

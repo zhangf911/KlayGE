@@ -34,29 +34,30 @@
 #pragma once
 
 #include <KFL/PreDeclare.hpp>
+#include <KFL/CXX17/string_view.hpp>
 #include <istream>
 #include <vector>
 #include <string>
 
 namespace KlayGE
 {
-	class ResIdentifier
+	class ResIdentifier final
 	{
 	public:
-		ResIdentifier(std::string const & name, uint64_t timestamp,
-				shared_ptr<std::istream> const & is)
-			: res_name_(name), timestamp_(timestamp), istream_(is)
+		ResIdentifier(std::string_view name, uint64_t timestamp,
+				std::shared_ptr<std::istream> const & is)
+			: ResIdentifier(name, timestamp, is, std::shared_ptr<std::streambuf>())
 		{
 		}
-		ResIdentifier(std::string const & name, uint64_t timestamp,
-				shared_ptr<std::istream> const & is, shared_ptr<std::streambuf> const & streambuf)
+		ResIdentifier(std::string_view name, uint64_t timestamp,
+				std::shared_ptr<std::istream> const & is, std::shared_ptr<std::streambuf> const & streambuf)
 			: res_name_(name), timestamp_(timestamp), istream_(is), streambuf_(streambuf)
 		{
 		}
 
-		void ResName(std::string const & name)
+		void ResName(std::string_view name)
 		{
-			res_name_ = name;
+			res_name_ = std::string(name);
 		}
 		std::string const & ResName() const
 		{
@@ -115,8 +116,8 @@ namespace KlayGE
 	private:
 		std::string res_name_;
 		uint64_t timestamp_;
-		shared_ptr<std::istream> istream_;
-		shared_ptr<std::streambuf> streambuf_;
+		std::shared_ptr<std::istream> istream_;
+		std::shared_ptr<std::streambuf> streambuf_;
 	};
 }
 

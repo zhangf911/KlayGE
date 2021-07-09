@@ -39,14 +39,14 @@ namespace KlayGE
 	class Bound_T
 	{
 	public:
-		virtual ~Bound_T()
+		virtual ~Bound_T() noexcept
 		{
 		}
 
-		virtual bool IsEmpty() const = 0;
+		virtual bool IsEmpty() const noexcept = 0;
 
-		virtual bool VecInBound(Vector_T<T, 3> const & v) const = 0;
-		virtual T MaxRadiusSq() const = 0;
+		virtual bool VecInBound(Vector_T<T, 3> const & v) const noexcept = 0;
+		virtual T MaxRadiusSq() const noexcept = 0;
 	};
 }
 

@@ -31,23 +31,25 @@
 #ifndef _SSRPOSTPROCESS_HPP
 #define _SSRPOSTPROCESS_HPP
 
+#pragma once
+
 #include <KlayGE/PreDeclare.hpp>
 #include <KlayGE/PostProcess.hpp>
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API SSRPostProcess : public PostProcess
+	class KLAYGE_CORE_API SSRPostProcess final : public PostProcess
 	{
 	public:
-		SSRPostProcess();
+		explicit SSRPostProcess(bool multi_sample);
 
-		void Apply();
+		void Apply() override;
 
 	private:
-		RenderEffectParameterPtr proj_param_;
-		RenderEffectParameterPtr inv_proj_param_;
-		RenderEffectParameterPtr near_q_far_param_;
-		RenderEffectParameterPtr ray_length_param_;
+		RenderEffectParameter* proj_param_;
+		RenderEffectParameter* inv_proj_param_;
+		RenderEffectParameter* near_q_far_param_;
+		RenderEffectParameter* ray_length_param_;
 	};
 }
 

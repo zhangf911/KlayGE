@@ -42,7 +42,7 @@ namespace KlayGE
 	// 描述一个平面 ax + by + cz + d = 0
 	///////////////////////////////////////////////////////////////////////////////
 	template <typename T>
-	class Plane_T : boost::equality_comparable<Plane_T<T> >
+	class Plane_T final : boost::equality_comparable<Plane_T<T>>
 	{
 	public:
 		enum { elem_num = 4 };
@@ -59,86 +59,107 @@ namespace KlayGE
 		typedef typename Vector_T<T, elem_num>::const_iterator const_iterator;
 
 	public:
-		Plane_T()
+		constexpr Plane_T() noexcept
 		{
 		}
-		explicit Plane_T(T const * rhs);
-		Plane_T(Plane_T const & rhs);
-		Plane_T(Vector_T<T, elem_num> const & rhs);
-		Plane_T(T a, T b, T c, T d);
+		explicit constexpr Plane_T(T const * rhs) noexcept
+			: plane_(rhs)
+		{
+		}
+		Plane_T(Plane_T const & rhs) noexcept;
+		Plane_T(Plane_T&& rhs) noexcept;
+		constexpr Plane_T(Vector_T<T, elem_num> const & rhs) noexcept
+			: plane_(rhs)
+		{
+		}
+		constexpr Plane_T(Vector_T<T, elem_num>&& rhs) noexcept
+			: plane_(std::move(rhs))
+		{
+		}
+		constexpr Plane_T(T a, T b, T c, T d) noexcept
+			: plane_(a, b, c, d)
+		{
+		}
+
+		static size_t size() noexcept
+		{
+			return elem_num;
+		}
 
 		// 取向量
-		iterator begin()
+		iterator begin() noexcept
 		{
 			return plane_.begin();
 		}
-		const_iterator begin() const
+		constexpr const_iterator begin() const noexcept
 		{
 			return plane_.begin();
 		}
-		iterator end()
+		iterator end() noexcept
 		{
 			return plane_.end();
 		}
-		const_iterator end() const
+		constexpr const_iterator end() const noexcept
 		{
 			return plane_.end();
 		}
-		reference operator[](size_t index)
+		reference operator[](size_t index) noexcept
 		{
 			return plane_[index];
 		}
-		const_reference operator[](size_t index) const
+		constexpr const_reference operator[](size_t index) const noexcept
 		{
 			return plane_[index];
 		}
 
-		reference a()
+		reference a() noexcept
 		{
 			return plane_[0];
 		}
-		const_reference a() const
+		constexpr const_reference a() const noexcept
 		{
 			return plane_[0];
 		}
-		reference b()
+		reference b() noexcept
 		{
 			return plane_[1];
 		}
-		const_reference b() const
+		constexpr const_reference b() const noexcept
 		{
 			return plane_[1];
 		}
-		reference c()
+		reference c() noexcept
 		{
 			return plane_[2];
 		}
-		const_reference c() const
+		constexpr const_reference c() const noexcept
 		{
 			return plane_[2];
 		}
-		reference d()
+		reference d() noexcept
 		{
 			return plane_[3];
 		}
-		const_reference d() const
+		constexpr const_reference d() const noexcept
 		{
 			return plane_[3];
 		}
 
 		// 赋值操作符
-		Plane_T& operator=(Plane_T const & rhs);
-		Plane_T& operator=(Vector_T<T, elem_num> const & rhs);
+		Plane_T& operator=(Plane_T const & rhs) noexcept;
+		Plane_T& operator=(Plane_T&& rhs) noexcept;
+		Plane_T& operator=(Vector_T<T, elem_num> const & rhs) noexcept;
+		Plane_T& operator=(Vector_T<T, elem_num>&& rhs) noexcept;
 
 		// 一元操作符
-		Plane_T const operator+() const;
-		Plane_T const operator-() const;
+		Plane_T const operator+() const noexcept;
+		Plane_T const operator-() const noexcept;
 
 		// 取法向向量
-		Vector_T<T, 3> const Normal() const;
-		void Normal(Vector_T<T, 3> const & rhs);
+		Vector_T<T, 3> const Normal() const noexcept;
+		void Normal(Vector_T<T, 3> const & rhs) noexcept;
 
-		bool operator==(Plane_T<T> const & rhs) const;
+		bool operator==(Plane_T<T> const & rhs) const noexcept;
 
 	private:
 		Vector_T<T, elem_num> plane_;

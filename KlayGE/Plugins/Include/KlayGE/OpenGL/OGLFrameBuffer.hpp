@@ -27,25 +27,28 @@ namespace KlayGE
 	{
 	public:
 		explicit OGLFrameBuffer(bool off_screen);
-		virtual ~OGLFrameBuffer();
+		~OGLFrameBuffer() override;
 
-		virtual std::wstring const & Description() const;
+		std::wstring const & Description() const override;
 
-		void OnBind();
+		void OnBind() override;
+		void OnUnbind() override;
 
-		void Clear(uint32_t flags, Color const & clr, float depth, int32_t stencil);
-		virtual void Discard(uint32_t flags) KLAYGE_OVERRIDE;
+		void Clear(uint32_t flags, Color const & clr, float depth, int32_t stencil) override;
+		void Discard(uint32_t flags) override;
 
-		GLuint OGLFbo() const
+		GLuint OGLFbo() const noexcept
 		{
 			return fbo_;
 		}
 
 	protected:
 		GLuint fbo_;
+
+		std::vector<GLenum> gl_targets_;
 	};
 
-	typedef shared_ptr<OGLFrameBuffer> OGLFrameBufferPtr;
+	typedef std::shared_ptr<OGLFrameBuffer> OGLFrameBufferPtr;
 }
 
 #endif			// _OGLFRAMEBUFFER_HPP

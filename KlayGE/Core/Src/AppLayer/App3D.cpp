@@ -26,8 +26,8 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/ResLoader.hpp>
@@ -45,138 +45,176 @@
 
 #include <KlayGE/App3D.hpp>
 
-#ifdef KLAYGE_PLATFORM_WINDOWS_RUNTIME
-#include <ppl.h>
-#include <ppltasks.h>
+#if defined(KLAYGE_PLATFORM_WINDOWS_STORE)
+#include <future>
+#include <windows.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.ApplicationModel.Core.h>
+#include <winrt/Windows.Graphics.Display.Core.h>
 
-using namespace Windows::ApplicationModel;
-using namespace Windows::ApplicationModel::Core;
-using namespace Windows::ApplicationModel::Activation;
-using namespace Windows::UI::Core;
-using namespace Windows::Foundation;
-using namespace concurrency;
+namespace uwp
+{
+	using winrt::auto_revoke;
+	using winrt::com_ptr;
+	using winrt::event_token;
+	using winrt::hstring;
+	using winrt::implements;
+	using winrt::make;
+
+	using namespace winrt::Windows::Foundation;
+	using namespace winrt::Windows::ApplicationModel;
+	using namespace winrt::Windows::ApplicationModel::Activation;
+	using namespace winrt::Windows::ApplicationModel::Core;
+	using namespace winrt::Windows::Graphics::Display;
+	using namespace winrt::Windows::UI::Core;
+	using namespace winrt::Windows::UI::Input;
+} // namespace uwp
+#elif defined(KLAYGE_PLATFORM_ANDROID)
+#include <android_native_app_glue.h>
 #endif
 
 namespace KlayGE
 {
-#if defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
-	ref class MetroFrameworkSource;
-	ref class MetroMsgs;
+#if defined KLAYGE_PLATFORM_WINDOWS_STORE
+	class MetroFrameworkSource;
 
-	ref class MetroFramework sealed : public Windows::ApplicationModel::Core::IFrameworkView
+	class MetroFramework : public uwp::implements<MetroFramework, uwp::IFrameworkView>
 	{
-		friend class App3DFramework;
-		friend MetroFrameworkSource;
-
 	public:
-		MetroFramework();
-	
-		virtual void Initialize(Windows::ApplicationModel::Core::CoreApplicationView^ application_view);
-		virtual void SetWindow(Windows::UI::Core::CoreWindow^ window);
-		virtual void Load(Platform::String^ entryPoint);
-		virtual void Run();
-		virtual void Uninitialize();
+		explicit MetroFramework(App3DFramework* app);
+
+		void Initialize(uwp::CoreApplicationView const& application_view);
+		void SetWindow(uwp::CoreWindow const& window);
+		void Load(uwp::hstring const& entry_point);
+		void Run();
+		void Uninitialize();
 
 	private:
-		void OnActivated(Windows::ApplicationModel::Core::CoreApplicationView^ application_view, Windows::ApplicationModel::Activation::IActivatedEventArgs^ args);
-		void OnSuspending(Platform::Object^ sender, Windows::ApplicationModel::SuspendingEventArgs^ args);
-		void OnResuming(Platform::Object^ sender, Platform::Object^ args);
+		HRESULT OnActivated(uwp::CoreApplicationView const& application_view, uwp::IActivatedEventArgs const& args);
+		HRESULT OnSuspending(uwp::IInspectable const& sender, uwp::SuspendingEventArgs const& args);
+		HRESULT OnResuming(uwp::IInspectable const& sender, uwp::IInspectable const& args);
 
-		void BindAppFramework(App3DFramework* app);
+		HRESULT OnWindowSizeChanged(uwp::CoreWindow const& sender, uwp::WindowSizeChangedEventArgs const& args);
+		HRESULT OnWindowClosed(uwp::CoreWindow const& sender, uwp::CoreWindowEventArgs const& args);
+		HRESULT OnVisibilityChanged(uwp::CoreWindow const& sender, uwp::VisibilityChangedEventArgs const& args);
+		HRESULT OnKeyDown(uwp::CoreWindow const& sender, uwp::KeyEventArgs const& args);
+		HRESULT OnKeyUp(uwp::CoreWindow const& sender, uwp::KeyEventArgs const& args);
+		HRESULT OnPointerPressed(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args);
+		HRESULT OnPointerReleased(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args);
+		HRESULT OnPointerMoved(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args);
+		HRESULT OnPointerWheelChanged(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args);
+		HRESULT OnDpiChanged(uwp::DisplayInformation const& sender, uwp::IInspectable const& args);
+		HRESULT OnOrientationChanged(uwp::DisplayInformation const& sender, uwp::IInspectable const& args);
 
 	private:
 		App3DFramework* app_;
-		MetroMsgs^ msgs_;
+		uwp::CoreApplicationView app_view_{nullptr};
+		uwp::CoreWindow window_{nullptr};
+
+		std::future<void> suspend_result_;
+
+		uwp::CoreApplicationView::Activated_revoker app_activated_token_;
+		uwp::CoreApplication::Suspending_revoker app_suspending_token_;
+		uwp::CoreApplication::Resuming_revoker app_resuming_token_;
+
+		uwp::CoreWindow::SizeChanged_revoker win_size_changed_token_;
+		uwp::CoreWindow::VisibilityChanged_revoker visibility_changed_token_;
+		uwp::CoreWindow::Closed_revoker win_closed_token_;
+		uwp::CoreWindow::KeyDown_revoker key_down_token_;
+		uwp::CoreWindow::KeyUp_revoker key_up_token_;
+		uwp::CoreWindow::PointerPressed_revoker pointer_pressed_token_;
+		uwp::CoreWindow::PointerReleased_revoker pointer_released_token_;
+		uwp::CoreWindow::PointerMoved_revoker pointer_moved_token_;
+		uwp::CoreWindow::PointerWheelChanged_revoker pointer_wheel_changed_token_;
+
+		uwp::DisplayInformation::DpiChanged_revoker dpi_changed_token_;
+		uwp::DisplayInformation::OrientationChanged_revoker orientation_changed_token_;
 	};
 
-	ref class MetroFrameworkSource sealed : Windows::ApplicationModel::Core::IFrameworkViewSource
+	class MetroFrameworkSource : public uwp::implements<MetroFrameworkSource, uwp::IFrameworkViewSource>
 	{
 		friend class App3DFramework;
 
 	public:
-		virtual Windows::ApplicationModel::Core::IFrameworkView^ CreateView();
+		explicit MetroFrameworkSource(App3DFramework* app);
 
-	private:
-		void BindAppFramework(App3DFramework* app);
+		uwp::IFrameworkView CreateView();
 
 	private:
 		App3DFramework* app_;
+		uwp::IFrameworkView view_;
 	};
 
-	ref class MetroMsgs sealed
-	{
-		friend MetroFramework;
-
-	public:
-		MetroMsgs();
-
-	private:
-		void OnWindowSizeChanged(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::WindowSizeChangedEventArgs^ args);
-		void OnLogicalDpiChanged(Platform::Object^ sender);
-		void OnWindowClosed(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::CoreWindowEventArgs^ args);
-		void OnVisibilityChanged(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::VisibilityChangedEventArgs^ args);
-		void OnPointerPressed(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::PointerEventArgs^ args);
-		void OnPointerReleased(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::PointerEventArgs^ args);
-		void OnPointerMoved(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::PointerEventArgs^ args);
-		void OnPointerWheelChanged(Windows::UI::Core::CoreWindow^ sender, Windows::UI::Core::PointerEventArgs^ args);
-
-		void BindWindow(WindowPtr const & win);
-
-	private:
-		WindowPtr win_;
-
-		array<uint32_t, 16> pointer_id_map_;
-	};
-
-	MetroFramework::MetroFramework()
-		: msgs_(ref new MetroMsgs)
+	MetroFramework::MetroFramework(App3DFramework* app) : app_(app)
 	{
 	}
 
-	void MetroFramework::Initialize(CoreApplicationView^ application_view)
+	void MetroFramework::Initialize(uwp::CoreApplicationView const& application_view)
 	{
-		application_view->Activated +=
-			ref new TypedEventHandler<CoreApplicationView^, IActivatedEventArgs^>(this, &MetroFramework::OnActivated);
+		app_view_ = application_view;
 
-		CoreApplication::Suspending +=
-			ref new EventHandler<SuspendingEventArgs^>(this, &MetroFramework::OnSuspending);
+		app_activated_token_ = application_view.Activated(
+			uwp::auto_revoke, [this](uwp::CoreApplicationView const& application_view, uwp::IActivatedEventArgs const& args) {
+				this->OnActivated(application_view, args);
+			});
 
-		CoreApplication::Resuming +=
-			ref new EventHandler<Platform::Object^>(this, &MetroFramework::OnResuming);
+		app_suspending_token_ = uwp::CoreApplication::Suspending(uwp::auto_revoke,
+			[this](uwp::IInspectable const& sender, uwp::SuspendingEventArgs const& args) { this->OnSuspending(sender, args); });
+		app_resuming_token_ = uwp::CoreApplication::Resuming(
+			uwp::auto_revoke, [this](uwp::IInspectable const& sender, uwp::IInspectable const& args) { this->OnResuming(sender, args); });
 	}
 
-	void MetroFramework::SetWindow(CoreWindow^ window)
+	void MetroFramework::SetWindow(uwp::CoreWindow const& window)
 	{
-		msgs_->BindWindow(app_->MainWnd());
+		window_ = window;
 
-		window->SizeChanged += 
-			ref new TypedEventHandler<CoreWindow^, WindowSizeChangedEventArgs^>(msgs_, &MetroMsgs::OnWindowSizeChanged);
+		win_size_changed_token_ =
+			window_.SizeChanged(uwp::auto_revoke, [this](uwp::CoreWindow const& sender, uwp::WindowSizeChangedEventArgs const& args) {
+				return this->OnWindowSizeChanged(sender, args);
+			});
 
-		window->VisibilityChanged +=
-			ref new TypedEventHandler<CoreWindow^, VisibilityChangedEventArgs^>(msgs_, &MetroMsgs::OnVisibilityChanged);
+		visibility_changed_token_ =
+			window_.VisibilityChanged(uwp::auto_revoke, [this](uwp::CoreWindow const& sender, uwp::VisibilityChangedEventArgs const& args) {
+				return this->OnVisibilityChanged(sender, args);
+			});
 
-		window->Closed += 
-			ref new TypedEventHandler<CoreWindow^, CoreWindowEventArgs^>(msgs_, &MetroMsgs::OnWindowClosed);
+		win_closed_token_ = window_.Closed(uwp::auto_revoke,
+			[this](uwp::CoreWindow const& sender, uwp::CoreWindowEventArgs const& args) { return this->OnWindowClosed(sender, args); });
 
-#ifndef KLAYGE_PLATFORM_WINDOWS_PHONE
-		window->PointerCursor = ref new CoreCursor(CoreCursorType::Arrow, 0);
-#endif
+		auto cursor = uwp::CoreCursor(uwp::CoreCursorType::Arrow, 0);
+		window_.PointerCursor(cursor);
 
-		window->PointerPressed +=
-			ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(msgs_, &MetroMsgs::OnPointerPressed);
-		window->PointerReleased +=
-			ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(msgs_, &MetroMsgs::OnPointerReleased);
-		window->PointerMoved +=
-			ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(msgs_, &MetroMsgs::OnPointerMoved);
-		window->PointerWheelChanged +=
-			ref new TypedEventHandler<CoreWindow^, PointerEventArgs^>(msgs_, &MetroMsgs::OnPointerWheelChanged);
+		key_down_token_ = window_.KeyDown(uwp::auto_revoke,
+			[this](uwp::CoreWindow const& sender, uwp::KeyEventArgs const& args) { return this->OnKeyDown(sender, args); });
+		key_up_token_ = window_.KeyUp(
+			uwp::auto_revoke, [this](uwp::CoreWindow const& sender, uwp::KeyEventArgs const& args) { return this->OnKeyUp(sender, args); });
 
-		app_->MainWnd()->SetWindow(Platform::Agile<Windows::UI::Core::CoreWindow>(window));
+		pointer_pressed_token_ = window_.PointerPressed(uwp::auto_revoke,
+			[this](uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args) { return this->OnPointerPressed(sender, args); });
+		pointer_released_token_ = window_.PointerReleased(uwp::auto_revoke,
+			[this](uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args) { return this->OnPointerReleased(sender, args); });
+		pointer_moved_token_ = window_.PointerMoved(uwp::auto_revoke,
+			[this](uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args) { return this->OnPointerMoved(sender, args); });
+		pointer_wheel_changed_token_ = window_.PointerWheelChanged(uwp::auto_revoke,
+			[this](uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args) { return this->OnPointerWheelChanged(sender, args); });
+
+		auto disp_info = uwp::DisplayInformation::GetForCurrentView();
+
+		dpi_changed_token_ = disp_info.DpiChanged(uwp::auto_revoke,
+			[this](uwp::DisplayInformation const& sender, uwp::IInspectable const& args) { return this->OnDpiChanged(sender, args); });
+
+		orientation_changed_token_ =
+			disp_info.OrientationChanged(uwp::auto_revoke, [this](uwp::DisplayInformation const& sender, uwp::IInspectable const& args) {
+				return this->OnOrientationChanged(sender, args);
+			});
+
+		app_->MainWnd()->SetWindow(window_);
 		app_->MetroCreate();
 	}
 
-	void MetroFramework::Load(Platform::String^ entryPoint)
+	void MetroFramework::Load(uwp::hstring const& entry_point)
 	{
+		KFL_UNUSED(entry_point);
 	}
 
 	void MetroFramework::Run()
@@ -186,183 +224,217 @@ namespace KlayGE
 
 	void MetroFramework::Uninitialize()
 	{
+		auto disp_info = uwp::DisplayInformation::GetForCurrentView();
+
+		dpi_changed_token_.revoke();
+		orientation_changed_token_.revoke();
+
+		pointer_wheel_changed_token_.revoke();
+		pointer_moved_token_.revoke();
+		pointer_released_token_.revoke();
+		pointer_pressed_token_.revoke();
+		key_up_token_.revoke();
+		key_down_token_.revoke();
+		win_closed_token_.revoke();
+		visibility_changed_token_.revoke();
+		win_size_changed_token_.revoke();
+
+		app_suspending_token_.revoke();
+		app_suspending_token_.revoke();
+		app_activated_token_.revoke();
 	}
 
-	void MetroFramework::OnActivated(CoreApplicationView^ application_view, IActivatedEventArgs^ args)
+	HRESULT MetroFramework::OnActivated(uwp::CoreApplicationView const& application_view, uwp::IActivatedEventArgs const& args)
 	{
-		CoreWindow::GetForCurrentThread()->Activate();
+		KFL_UNUSED(application_view);
+		KFL_UNUSED(args);
+
+		auto core_win = uwp::CoreWindow::GetForCurrentThread();
+		core_win.Activate();
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnActivated();
+
+		return S_OK;
 	}
 
-	void MetroFramework::OnSuspending(Platform::Object^ sender, SuspendingEventArgs^ args)
+	HRESULT MetroFramework::OnSuspending(uwp::IInspectable const& sender, uwp::SuspendingEventArgs const& args)
 	{
-		SuspendingDeferral^ deferral = args->SuspendingOperation->GetDeferral();
+		KFL_UNUSED(sender);
 
-		create_task([this, deferral]()
-		{
+		auto deferral = args.SuspendingOperation().GetDeferral();
+		suspend_result_ = std::async(std::launch::async, [this, deferral]() {
 			app_->Suspend();
 
-			deferral->Complete();
+			deferral.Complete();
 		});
+
+		return S_OK;
 	}
 
-	void MetroFramework::OnResuming(Platform::Object^ sender, Platform::Object^ args)
+	HRESULT MetroFramework::OnResuming(uwp::IInspectable const& sender, uwp::IInspectable const& args)
 	{
+		KFL_UNUSED(sender);
+		KFL_UNUSED(args);
+
 		app_->Resume();
+
+		return S_OK;
 	}
 
-	void MetroFramework::BindAppFramework(App3DFramework* app)
+	HRESULT MetroFramework::OnWindowSizeChanged(uwp::CoreWindow const& sender, uwp::WindowSizeChangedEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnSizeChanged(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnVisibilityChanged(uwp::CoreWindow const& sender, uwp::VisibilityChangedEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnVisibilityChanged(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnWindowClosed(uwp::CoreWindow const& sender, uwp::CoreWindowEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+		KFL_UNUSED(args);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnClosed();
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnKeyDown(uwp::CoreWindow const& sender, uwp::KeyEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnKeyDown(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnKeyUp(uwp::CoreWindow const& sender, uwp::KeyEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnKeyUp(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnPointerPressed(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnPointerPressed(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnPointerReleased(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnPointerReleased(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnPointerMoved(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnPointerMoved(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnPointerWheelChanged(uwp::CoreWindow const& sender, uwp::PointerEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnPointerWheelChanged(args);
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnDpiChanged(uwp::DisplayInformation const& sender, uwp::IInspectable const& args)
+	{
+		KFL_UNUSED(sender);
+		KFL_UNUSED(args);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnDpiChanged();
+
+		return S_OK;
+	}
+
+	HRESULT MetroFramework::OnOrientationChanged(uwp::DisplayInformation const& sender, uwp::IInspectable const& args)
+	{
+		KFL_UNUSED(sender);
+		KFL_UNUSED(args);
+
+		WindowPtr const & win = app_->MainWnd();
+		win->OnOrientationChanged();
+
+		return S_OK;
+	}
+
+	MetroFrameworkSource::MetroFrameworkSource(App3DFramework* app) : view_(uwp::make<MetroFramework>(app))
 	{
 		app_ = app;
 	}
-	
-	IFrameworkView^ MetroFrameworkSource::CreateView()
+
+	uwp::IFrameworkView MetroFrameworkSource::CreateView()
 	{
-		MetroFramework^ ret = ref new MetroFramework;
-		ret->BindAppFramework(app_);
-		return ret;
-	}
-
-	void MetroFrameworkSource::BindAppFramework(App3DFramework* app)
-	{
-		app_ = app;
-	}
-
-	MetroMsgs::MetroMsgs()
-	{
-		pointer_id_map_.fill(0);
-	}
-
-	void MetroMsgs::OnWindowSizeChanged(CoreWindow^ /*sender*/, WindowSizeChangedEventArgs^ /*args*/)
-	{
-		win_->Active(true);
-		win_->Ready(true);
-		win_->OnSize()(*win_, true);
-	}
-
-	void MetroMsgs::OnVisibilityChanged(CoreWindow^ /*sender*/, VisibilityChangedEventArgs^ args)
-	{
-		win_->Active(args->Visible);
-		win_->OnActive()(*win_, args->Visible);
-	}
-
-	void MetroMsgs::OnWindowClosed(CoreWindow^ /*sender*/, CoreWindowEventArgs^ /*args*/)
-	{
-		win_->OnClose()(*win_);
-		win_->Active(false);
-		win_->Ready(false);
-		win_->Closed(true);
-	}
-
-	void MetroMsgs::OnPointerPressed(CoreWindow^ /*sender*/, PointerEventArgs^ args)
-	{
-		uint32_t conv_id = 0;
-		for (size_t i = 0; i < pointer_id_map_.size(); ++ i)
-		{
-			if (0 == pointer_id_map_[i])
-			{
-				conv_id = static_cast<uint32_t>(i + 1);
-				pointer_id_map_[i] = args->CurrentPoint->PointerId;
-				break;
-			}
-		}
-		
-		win_->OnPointerDown()(*win_,
-			int2(static_cast<int>(args->CurrentPoint->Position.X), static_cast<int>(args->CurrentPoint->Position.Y)),
-			conv_id);
-	}
-
-	void MetroMsgs::OnPointerReleased(CoreWindow^ /*sender*/, PointerEventArgs^ args)
-	{
-		uint32_t conv_id = 0;
-		for (size_t i = 0; i < pointer_id_map_.size(); ++ i)
-		{
-			if (args->CurrentPoint->PointerId == pointer_id_map_[i])
-			{
-				conv_id = static_cast<uint32_t>(i + 1);
-				pointer_id_map_[i] = 0;
-				break;
-			}
-		}
-
-		win_->OnPointerUp()(*win_,
-			int2(static_cast<int>(args->CurrentPoint->Position.X), static_cast<int>(args->CurrentPoint->Position.Y)),
-			conv_id);
-	}
-
-	void MetroMsgs::OnPointerMoved(CoreWindow^ /*sender*/, PointerEventArgs^ args)
-	{
-		uint32_t conv_id = 0;
-		for (size_t i = 0; i < pointer_id_map_.size(); ++ i)
-		{
-			if (args->CurrentPoint->PointerId == pointer_id_map_[i])
-			{
-				conv_id = static_cast<uint32_t>(i + 1);
-				break;
-			}
-		}
-
-		win_->OnPointerUpdate()(*win_,
-			int2(static_cast<int>(args->CurrentPoint->Position.X), static_cast<int>(args->CurrentPoint->Position.Y)),
-			conv_id, args->CurrentPoint->IsInContact);
-	}
-
-	void MetroMsgs::OnPointerWheelChanged(CoreWindow^ /*sender*/, PointerEventArgs^ args)
-	{
-		uint32_t conv_id = 0;
-		for (size_t i = 0; i < pointer_id_map_.size(); ++ i)
-		{
-			if (args->CurrentPoint->PointerId == pointer_id_map_[i])
-			{
-				conv_id = static_cast<uint32_t>(i + 1);
-				break;
-			}
-		}
-
-		win_->OnPointerWheel()(*win_,
-			int2(static_cast<int>(args->CurrentPoint->Position.X), static_cast<int>(args->CurrentPoint->Position.Y)),
-			conv_id, args->CurrentPoint->Properties->MouseWheelDelta);
-	}
-
-	void MetroMsgs::BindWindow(WindowPtr const & win)
-	{
-		win_ = win;
+		return view_;
 	}
 #endif
 
 	// 构造函数
 	/////////////////////////////////////////////////////////////////////////////////
 	App3DFramework::App3DFramework(std::string const & name)
-						: name_(name),
-							fps_(0), accumulate_time_(0), num_frames_(0),
-							app_time_(0), frame_time_(0)
+						: App3DFramework(name, nullptr)
 	{
-		Context::Instance().AppInstance(*this);
-
-		ContextCfg cfg = Context::Instance().Config();
-		main_wnd_ = this->MakeWindow(name_, cfg.graphics_cfg);
-#ifndef KLAYGE_PLATFORM_WINDOWS_RUNTIME
-		cfg.graphics_cfg.left = main_wnd_->Left();
-		cfg.graphics_cfg.top = main_wnd_->Top();
-		cfg.graphics_cfg.width = main_wnd_->Width();
-		cfg.graphics_cfg.height = main_wnd_->Height();
-		Context::Instance().Config(cfg);
-#endif
 	}
 
 	App3DFramework::App3DFramework(std::string const & name, void* native_wnd)
-						: name_(name),
+						: name_(name), total_num_frames_(0),
 							fps_(0), accumulate_time_(0), num_frames_(0),
 							app_time_(0), frame_time_(0)
 	{
 		Context::Instance().AppInstance(*this);
 
 		ContextCfg cfg = Context::Instance().Config();
+
+		if (cfg.deferred_rendering)
+		{
+			DeferredRenderingLayer::Register();
+		}
+
 		main_wnd_ = this->MakeWindow(name_, cfg.graphics_cfg, native_wnd);
-#ifndef KLAYGE_PLATFORM_WINDOWS_RUNTIME
-		cfg.graphics_cfg.left = main_wnd_->Left();
-		cfg.graphics_cfg.top = main_wnd_->Top();
-		cfg.graphics_cfg.width = main_wnd_->Width();
-		cfg.graphics_cfg.height = main_wnd_->Height();
+#ifndef KLAYGE_PLATFORM_WINDOWS_STORE
+		auto const & win = Context::Instance().AppInstance().MainWnd();
+		float const eff_dpi_scale = win->EffectiveDPIScale();
+		cfg.graphics_cfg.left = static_cast<uint32_t>(main_wnd_->Left() / eff_dpi_scale + 0.5f);
+		cfg.graphics_cfg.top = static_cast<uint32_t>(main_wnd_->Top() / eff_dpi_scale + 0.5f);
+		cfg.graphics_cfg.width = static_cast<uint32_t>(main_wnd_->Width() / eff_dpi_scale + 0.5f);
+		cfg.graphics_cfg.height = static_cast<uint32_t>(main_wnd_->Height() / eff_dpi_scale + 0.5f);
 		Context::Instance().Config(cfg);
 #endif
 	}
@@ -374,7 +446,7 @@ namespace KlayGE
 
 	// 建立应用程序主窗口
 	/////////////////////////////////////////////////////////////////////////////////
-#ifdef KLAYGE_PLATFORM_WINDOWS_RUNTIME
+#ifdef KLAYGE_PLATFORM_WINDOWS_STORE
 	void App3DFramework::Create()
 	{
 	}
@@ -390,19 +462,18 @@ namespace KlayGE
 			cfg.graphics_cfg);
 		Context::Instance().Config(cfg);
 
-		if (cfg.deferred_rendering)
-		{
-			Context::Instance().DeferredRenderingLayerInstance(MakeSharedPtr<DeferredRenderingLayer>());
-		}
-
 		this->OnCreate();
+
 		this->OnResize(cfg.graphics_cfg.width, cfg.graphics_cfg.height);
 	}
 
 	void App3DFramework::Destroy()
 	{
 		this->OnDestroy();
-		Context::Instance().RenderFactoryInstance().RenderEngineInstance().DestroyRenderWindow();
+		if (Context::Instance().RenderFactoryValid())
+		{
+			Context::Instance().RenderFactoryInstance().RenderEngineInstance().DestroyRenderWindow();
+		}
 
 		main_wnd_.reset();
 
@@ -428,7 +499,7 @@ namespace KlayGE
 
 	WindowPtr App3DFramework::MakeWindow(std::string const & name, RenderSettings const & settings)
 	{
-		return MakeSharedPtr<Window>(name, settings);
+		return MakeSharedPtr<Window>(name, settings, nullptr);
 	}
 
 	WindowPtr App3DFramework::MakeWindow(std::string const & name, RenderSettings const & settings, void* native_wnd)
@@ -436,12 +507,10 @@ namespace KlayGE
 		return MakeSharedPtr<Window>(name, settings, native_wnd);
 	}
 
-#if defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
+#if defined KLAYGE_PLATFORM_WINDOWS_STORE
 	void App3DFramework::Run()
 	{
-		MetroFrameworkSource^ metro_app = ref new MetroFrameworkSource;
-		metro_app->BindAppFramework(this);
-		CoreApplication::Run(metro_app);
+		uwp::CoreApplication::Run(uwp::make<MetroFrameworkSource>(this));
 	}
 
 	void App3DFramework::MetroRun()
@@ -480,17 +549,20 @@ namespace KlayGE
 				re.Refresh();
 			}
 		}
-#elif defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
+#elif defined KLAYGE_PLATFORM_WINDOWS_STORE
+		auto core_win = uwp::CoreWindow::GetForCurrentThread();
+		auto dispatcher = core_win.Dispatcher();
+
 		while (!main_wnd_->Closed())
 		{
 			if (main_wnd_->Active())
 			{
-				CoreWindow::GetForCurrentThread()->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+				dispatcher.ProcessEvents(uwp::CoreProcessEventsOption::ProcessAllIfPresent);
 				re.Refresh();
 			}
 			else
 			{
-				CoreWindow::GetForCurrentThread()->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessOneAndAllPending);
+				dispatcher.ProcessEvents(uwp::CoreProcessEventsOption::ProcessOneAndAllPending);
 			}
 		}
 #elif defined KLAYGE_PLATFORM_LINUX
@@ -551,7 +623,7 @@ namespace KlayGE
 	Camera const & App3DFramework::ActiveCamera() const
 	{
 		RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
-		CameraPtr const & camera = re.CurFrameBuffer()->GetViewport()->camera;
+		CameraPtr const& camera = re.CurFrameBuffer()->Viewport()->Camera();
 		BOOST_ASSERT(camera);
 
 		return *camera;
@@ -560,7 +632,7 @@ namespace KlayGE
 	Camera& App3DFramework::ActiveCamera()
 	{
 		RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
-		CameraPtr const & camera = re.CurFrameBuffer()->GetViewport()->camera;
+		CameraPtr const& camera = re.CurFrameBuffer()->Viewport()->Camera();
 		BOOST_ASSERT(camera);
 
 		return *camera;
@@ -570,13 +642,17 @@ namespace KlayGE
 	/////////////////////////////////////////////////////////////////////////////////
 	void App3DFramework::LookAt(float3 const & vEye, float3 const & vLookAt)
 	{
-		this->ActiveCamera().ViewParams(vEye, vLookAt, float3(0, 1, 0));
+		this->LookAt(vEye, vLookAt, float3(0, 1, 0));
 	}
 
 	void App3DFramework::LookAt(float3 const & vEye, float3 const & vLookAt,
 												float3 const & vUp)
 	{
-		this->ActiveCamera().ViewParams(vEye, vLookAt, vUp);
+		auto& camera = this->ActiveCamera();
+		camera.LookAtDist(MathLib::length(vLookAt - vEye));
+
+		auto& camera_node = *camera.BoundSceneNode();
+		camera_node.TransformToWorld(MathLib::inverse(MathLib::look_at_lh(vEye, vLookAt, vUp)));
 	}
 
 	// 设置投射矩阵
@@ -632,6 +708,8 @@ namespace KlayGE
 	/////////////////////////////////////////////////////////////////////////////////
 	void App3DFramework::UpdateStats()
 	{
+		++ total_num_frames_;
+
 		// measure statistics
 		frame_time_ = static_cast<float>(timer_.elapsed());
 		++ num_frames_;
@@ -649,6 +727,11 @@ namespace KlayGE
 		}
 
 		timer_.restart();
+	}
+
+	uint32_t App3DFramework::TotalNumFrames() const
+	{
+		return total_num_frames_;
 	}
 
 	// 获取渲染目标的每秒帧数

@@ -74,49 +74,53 @@
 namespace KlayGE
 {
 	// 1s5e10m
-	class half : boost::addable<half,
+	class half final : boost::addable<half,
 						boost::subtractable<half,
 						boost::multipliable<half,
 						boost::dividable<half,
-						boost::equality_comparable<half> > > > >
+						boost::equality_comparable<half>>>>>
 	{
 	public:
-		half()
+		constexpr half() noexcept
+			: value_()
+		{
+		}
+		explicit half(float f) noexcept;
+		half(half const& rhs) noexcept
+			: value_(rhs.value_)
 		{
 		}
 
-		explicit half(float f);
-
-		operator float() const;
+		operator float() const noexcept;
 
 		// 特殊值
 
 		// returns +infinity
-		static half pos_inf();
+		static half pos_inf() noexcept;
 
 		// returns -infinity
-		static half neg_inf();
+		static half neg_inf() noexcept;
 
 		// returns a NAN with the bit pattern 0111111111111111
-		static half q_nan();
+		static half q_nan() noexcept;
 
 		// returns a NAN with the bit pattern 0111110111111111
-		static half s_nan();
+		static half s_nan() noexcept;
 
 
 		// 赋值操作符
-		half const & operator+=(half const & rhs);
-		half const & operator-=(half const & rhs);
-		half const & operator*=(half const & rhs);
-		half const & operator/=(half const & rhs);
+		half const & operator+=(half const & rhs) noexcept;
+		half const & operator-=(half const & rhs) noexcept;
+		half const & operator*=(half const & rhs) noexcept;
+		half const & operator/=(half const & rhs) noexcept;
 
-		half& operator=(half const & rhs);
+		half& operator=(half const & rhs) noexcept;
 
 		// 一元操作符
-		half const operator+() const;
-		half const operator-() const;
+		half const operator+() const noexcept;
+		half const operator-() const noexcept;
 
-		bool operator==(half const & rhs);
+		bool operator==(half const & rhs) noexcept;
 
 	private:
 		uint16_t value_;
@@ -129,59 +133,59 @@ namespace std
 	class numeric_limits<KlayGE::half>
 	{
 	public:
-		static bool const is_specialized = true;
-		static int const digits = HALF_MANT_DIG;
-		static int const digits10 = HALF_DIG;
-		static bool const is_signed = true;
-		static bool const is_integer = false;
-		static bool const is_exact = false;
-		static int const radix = HALF_RADIX;
-		static int const min_exponent = HALF_MIN_EXP;
-		static int const min_exponent10 = HALF_MIN_10_EXP;
-		static int const max_exponent = HALF_MAX_EXP;
-		static int const max_exponent10 = HALF_MAX_10_EXP;
-		static bool const has_infinity = true;
-		static bool const has_quiet_NaN = true;
-		static bool const has_signaling_NaN = true;
-		static float_denorm_style const has_denorm = denorm_present;
-		static bool const has_denorm_loss = false;
-		static bool const is_iec559 = false;
-		static bool const is_bounded = false;
-		static bool const is_modulo = false;
-		static bool const traps = true;
-		static bool const tinyness_before = false;
-		static float_round_style const round_style = round_to_nearest;
+		static bool constexpr is_specialized = true;
+		static int constexpr digits = HALF_MANT_DIG;
+		static int constexpr digits10 = HALF_DIG;
+		static bool constexpr is_signed = true;
+		static bool constexpr is_integer = false;
+		static bool constexpr is_exact = false;
+		static int constexpr radix = HALF_RADIX;
+		static int constexpr min_exponent = HALF_MIN_EXP;
+		static int constexpr min_exponent10 = HALF_MIN_10_EXP;
+		static int constexpr max_exponent = HALF_MAX_EXP;
+		static int constexpr max_exponent10 = HALF_MAX_10_EXP;
+		static bool constexpr has_infinity = true;
+		static bool constexpr has_quiet_NaN = true;
+		static bool constexpr has_signaling_NaN = true;
+		static float_denorm_style constexpr has_denorm = denorm_present;
+		static bool constexpr has_denorm_loss = false;
+		static bool constexpr is_iec559 = false;
+		static bool constexpr is_bounded = false;
+		static bool constexpr is_modulo = false;
+		static bool constexpr traps = true;
+		static bool constexpr tinyness_before = false;
+		static float_round_style constexpr round_style = round_to_nearest;
 
-		static KlayGE::half min() throw()
+		static KlayGE::half min() noexcept
 		{
 			return KlayGE::half(HALF_NRM_MIN);
 		}
-		static KlayGE::half max() throw()
+		static KlayGE::half max() noexcept
 		{
 			return KlayGE::half(HALF_MAX);
 		}
-		static KlayGE::half epsilon() throw()
+		static KlayGE::half epsilon() noexcept
 		{
 			return KlayGE::half(HALF_EPSILON);
 		}
-		static KlayGE::half round_error() throw()
+		static KlayGE::half round_error() noexcept
 		{
 			return KlayGE::half(HALF_EPSILON / 2);
 		}
 
-		static KlayGE::half infinity() throw()
+		static KlayGE::half infinity() noexcept
 		{
 			return KlayGE::half::pos_inf();
 		}
-		static KlayGE::half quiet_NaN() throw()
+		static KlayGE::half quiet_NaN() noexcept
 		{
 			return KlayGE::half::q_nan();
 		}
-		static KlayGE::half signaling_NaN() throw()
+		static KlayGE::half signaling_NaN() noexcept
 		{
 			return KlayGE::half::s_nan();
 		}
-		static KlayGE::half denorm_min() throw()
+		static KlayGE::half denorm_min() noexcept
 		{
 			return KlayGE::half(HALF_MIN);
 		}

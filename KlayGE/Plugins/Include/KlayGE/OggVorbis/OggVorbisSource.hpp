@@ -24,30 +24,30 @@
 
 #include <istream>
 #include <vorbis/codec.h>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4244)
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable" // Ignore OV_CALLBACKS_DEFAULT
 #endif
 #include <vorbis/vorbisfile.h>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic pop
 #endif
 
 namespace KlayGE
 {
-	class OggVorbisSource : public AudioDataSource
+	class OggVorbisSource final : public AudioDataSource
 	{
 	public:
-		OggVorbisSource();
-		~OggVorbisSource();
+		OggVorbisSource() noexcept;
+		~OggVorbisSource() override;
 
-		void Open(ResIdentifierPtr const & file);
-		void Close();
+		void Open(ResIdentifierPtr const & file) override;
+		void Close() override;
 
-		size_t Size();
+		size_t Size() override;
 
-		size_t Read(void* data, size_t size);
-		void Reset();
+		size_t Read(void* data, size_t size) override;
+		void Reset() override;
 
 	private:
 		static size_t VorbisRead(void* ptr, size_t byteSize, size_t sizeToRead, void* datasource);

@@ -20,34 +20,7 @@
 
 namespace KlayGE
 {
-	class NullInputFactory : public InputFactory
-	{
-	public:
-		std::wstring const & Name() const
-		{
-			static std::wstring const name(L"Null Input Factory");
-			return name;
-		}
-
-	private:
-		InputEnginePtr DoMakeInputEngine()
-		{
-			return InputEngine::NullObject();
-		}
-
-		virtual void DoSuspend() KLAYGE_OVERRIDE
-		{
-		}
-		virtual void DoResume() KLAYGE_OVERRIDE
-		{
-		}
-	};
-
-	InputFactoryPtr InputFactory::NullObject()
-	{
-		static InputFactoryPtr obj = MakeSharedPtr<NullInputFactory>();
-		return obj;
-	}
+	InputFactory::~InputFactory() noexcept = default;
 
 	InputEngine& InputFactory::InputEngineInstance()
 	{

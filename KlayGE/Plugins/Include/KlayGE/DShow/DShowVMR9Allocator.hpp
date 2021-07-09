@@ -16,22 +16,18 @@
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
-#include <KFL/Thread.hpp>
+#include <KFL/com_ptr.hpp>
 
-#include <d3d9.h>
-#include <strmif.h>
-#include <vmr9.h>
+#include <atomic>
+#include <mutex>
 #include <vector>
 
 namespace KlayGE
 {
-	class DShowVMR9Allocator : public IVMRSurfaceAllocator9, IVMRImagePresenter9
+	class DShowVMR9Allocator final : public IVMRSurfaceAllocator9, IVMRImagePresenter9
 	{
 	public:
-		enum
-		{
-			USER_ID = 0xBAFEDCBA
-		};
+		static uint64_t constexpr USER_ID = 0xBAFEDCBA;
 
 	public:
 		explicit DShowVMR9Allocator(HWND wnd);
@@ -42,30 +38,30 @@ namespace KlayGE
 				/* [in] */ DWORD_PTR dwUserID,
 				/* [in] */ VMR9AllocationInfo *lpAllocInfo,
 				/* [out][in] */ DWORD *lpNumBuffers);
-	            
+
 		virtual HRESULT STDMETHODCALLTYPE TerminateDevice( 
 			/* [in] */ DWORD_PTR dwID);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE GetSurface( 
 			/* [in] */ DWORD_PTR dwUserID,
 			/* [in] */ DWORD SurfaceIndex,
 			/* [in] */ DWORD SurfaceFlags,
 			/* [out] */ IDirect3DSurface9 **lplpSurface);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE AdviseNotify( 
 			/* [in] */ IVMRSurfaceAllocatorNotify9 *lpIVMRSurfAllocNotify);
 
 		// IVMRImagePresenter9
 		virtual HRESULT STDMETHODCALLTYPE StartPresenting( 
 			/* [in] */ DWORD_PTR dwUserID);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE StopPresenting( 
 			/* [in] */ DWORD_PTR dwUserID);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE PresentImage( 
 			/* [in] */ DWORD_PTR dwUserID,
 			/* [in] */ VMR9PresentationInfo *lpPresInfo);
-	    
+
 		// IUnknown
 		virtual HRESULT STDMETHODCALLTYPE QueryInterface( 
 			REFIID riid,
@@ -83,18 +79,18 @@ namespace KlayGE
 
 	private:
 		// needed to make this a thread safe object
-		mutex			mutex_;
+		std::mutex		mutex_;
 		HWND			wnd_;
-		atomic<int32_t>	ref_count_;
+		std::atomic<int32_t>	ref_count_;
 
-		shared_ptr<IDirect3D9> d3d_;
-		shared_ptr<IDirect3DDevice9> d3d_device_;
+		com_ptr<IDirect3D9> d3d_;
+		com_ptr<IDirect3DDevice9> d3d_device_;
 
-		shared_ptr<IVMRSurfaceAllocatorNotify9> vmr_surf_alloc_notify_;
+		com_ptr<IVMRSurfaceAllocatorNotify9> vmr_surf_alloc_notify_;
 		std::vector<IDirect3DSurface9*>	surfaces_;
 		uint32_t cur_surf_index_;
 
-		shared_ptr<IDirect3DSurface9> cache_surf_;
+		com_ptr<IDirect3DSurface9> cache_surf_;
 		TexturePtr			present_tex_;
 
 		HMODULE mod_d3d9_;

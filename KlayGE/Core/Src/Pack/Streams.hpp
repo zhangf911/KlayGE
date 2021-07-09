@@ -28,13 +28,14 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _KFL_STREAMS_HPP
-#define _KFL_STREAMS_HPP
+#ifndef KLAYGE_CORE_STREAMS_HPP
+#define KLAYGE_CORE_STREAMS_HPP
 
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
 
+#include <atomic>
 #include <fstream>
 #include <string>
 
@@ -42,123 +43,54 @@
 
 namespace KlayGE
 {
-	class CInStream : public IInStream, public IStreamGetSize
+	class InStream final : boost::noncopyable, public IInStream, public IStreamGetSize
 	{
 	public:
-		STDMETHOD_(ULONG, AddRef)()
-		{
-			++ ref_count_;
-			return ref_count_;
-		}
-		STDMETHOD_(ULONG, Release)()
-		{
-			-- ref_count_;
-			if (0 == ref_count_)
-			{
-				delete this;
-				return 0;
-			}
-			return ref_count_;
-		}
+		// IUnknown
+		STDMETHOD_(ULONG, AddRef)() noexcept;
+		STDMETHOD_(ULONG, Release)() noexcept;
+		STDMETHOD(QueryInterface)(REFGUID iid, void** out_object) noexcept;
 
-		STDMETHOD(QueryInterface)(REFGUID iid, void** outObject)
-		{
-			if (IID_IInStream == iid)
-			{
-				*outObject = static_cast<IInStream*>(this);
-				this->AddRef();
-				return S_OK;
-			}
-			else
-			{
-				if (IID_IStreamGetSize == iid)
-				{
-					*outObject = static_cast<IStreamGetSize*>(this);
-					this->AddRef();
-					return S_OK;
-				}
-				else
-				{
-					return E_NOINTERFACE;
-				}
-			}
-		}
+		// IInStream
+		STDMETHOD(Read)(void* data, UInt32 size, UInt32* processed_size) noexcept;
+		STDMETHOD(Seek)(Int64 offset, UInt32 seek_origin, UInt64* new_position) noexcept;
 
+		// IStreamGetSize
+		STDMETHOD(GetSize)(UInt64* size) noexcept;
 
-		CInStream()
-			: ref_count_(1)
-		{
-		}
-		virtual ~CInStream()
-		{
-		}
-
-		void Attach(ResIdentifierPtr const & is);
-
-		STDMETHOD(Read)(void* data, UInt32 size, UInt32* processedSize);
-		STDMETHOD(Seek)(Int64 offset, UInt32 seekOrigin, UInt64* newPosition);
-
-		STDMETHOD(GetSize)(UInt64* size);
+	public:
+		explicit InStream(ResIdentifierPtr const & is);
+		virtual ~InStream() noexcept;
 
 	private:
-		atomic<int32_t> ref_count_;
+		std::atomic<int32_t> ref_count_{1};
 
 		ResIdentifierPtr is_;
-		uint64_t stream_size_;
+		uint64_t stream_size_ = 0;
 	};
 
-	class COutStream : public IOutStream
+	class OutStream final : boost::noncopyable, public IOutStream
 	{
 	public:
-		STDMETHOD_(ULONG, AddRef)()
-		{
-			++ ref_count_;
-			return ref_count_;
-		}
-		STDMETHOD_(ULONG, Release)()
-		{
-			-- ref_count_;
-			if (0 == ref_count_)
-			{
-				delete this;
-				return 0;
-			}
-			return ref_count_;
-		}
+		// IUnknown
+		STDMETHOD_(ULONG, AddRef)() noexcept;
+		STDMETHOD_(ULONG, Release)() noexcept;
+		STDMETHOD(QueryInterface)(REFGUID iid, void** out_object) noexcept;
 
-		STDMETHOD(QueryInterface)(REFGUID iid, void** outObject)
-		{
-			if (IID_IOutStream == iid)
-			{
-				*outObject = static_cast<void*>(this);
-				this->AddRef();
-				return S_OK;
-			}
-			else
-			{
-				return E_NOINTERFACE;
-			}
-		}
+		// IOutStream
+		STDMETHOD(Write)(void const * data, UInt32 size, UInt32* processed_size) noexcept;
+		STDMETHOD(Seek)(Int64 offset, UInt32 seek_origin, UInt64* new_position) noexcept;
+		STDMETHOD(SetSize)(UInt64 new_size) noexcept;
 
-		COutStream()
-			: ref_count_(1)
-		{
-		}
-		virtual ~COutStream()
-		{
-		}
-
-		void Attach(shared_ptr<std::ostream> const & os);
-
-		STDMETHOD(Write)(const void* data, UInt32 size, UInt32* processedSize);
-		STDMETHOD(Seek)(Int64 offset, UInt32 seekOrigin, UInt64* newPosition);
-		STDMETHOD(SetSize)(UInt64 newSize);
+	public:
+		explicit OutStream(std::shared_ptr<std::ostream> const & os) noexcept;
+		virtual ~OutStream() noexcept;
 
 	private:
-		atomic<int32_t> ref_count_;
+		std::atomic<int32_t> ref_count_{1};
 
-		shared_ptr<std::ostream> os_;
+		std::shared_ptr<std::ostream> os_;
 	};
 }
 
-#endif		// _KFL_STREAMS_HPP
+#endif		// KLAYGE_CORE_STREAMS_HPP

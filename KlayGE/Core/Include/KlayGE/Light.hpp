@@ -16,16 +16,27 @@
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
+#include <KlayGE/SceneComponent.hpp>
+
+#include <array>
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API LightSource : public enable_shared_from_this<LightSource>
+	class KLAYGE_CORE_API LightSource : public SceneComponent, public std::enable_shared_from_this<LightSource>
 	{
 	public:
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((SceneComponent))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
+
 		enum LightType
 		{
 			LT_Ambient = 0,
-			LT_Sun,
 			LT_Directional,
 			LT_Point,
 			LT_Spot,
@@ -47,22 +58,12 @@ namespace KlayGE
 
 	public:
 		explicit LightSource(LightType type);
-		virtual ~LightSource();
+		virtual ~LightSource() noexcept;
 
 		LightType Type() const;
 
 		int32_t Attrib() const;
 		virtual void Attrib(int32_t attrib);
-
-		bool Enabled() const;
-		void Enabled(bool enabled);
-
-		void BindUpdateFunc(function<void(LightSource&, float, float)> const & update_func);
-
-		virtual void Update(float app_time, float elapsed_time);
-
-		virtual void AddToSceneManager();
-		virtual void DelFromSceneManager();
 
 		float4 const & Color() const;
 		void Color(float3 const & clr);
@@ -72,17 +73,10 @@ namespace KlayGE
 		virtual TexturePtr const & SkylightTex() const;
 		virtual void SkylightTex(TexturePtr const & tex_y, TexturePtr const & tex_c);
 		virtual void SkylightTex(TexturePtr const & tex);
-		virtual void SkylightTex(KlayGE::function<TexturePtr()> const & y_cube_tl,
-			KlayGE::function<TexturePtr()> const & c_cube_tl);
-		virtual void SkylightTex(KlayGE::function<TexturePtr()> const & cube_tl);
 
-		virtual float3 const & Position() const;
-		virtual void Position(float3 const & pos);
-		virtual float3 Direction() const;
-		virtual void Direction(float3 const & dir);
-		virtual Quaternion const & Rotation() const;
-		virtual void Rotation(Quaternion const & quat);
-		virtual void ModelMatrix(float4x4 const & model);
+		float3 const & Position() const;
+		float3 const & Direction() const;
+		Quaternion Rotation() const;
 		virtual float3 const & Falloff() const;
 		virtual void Falloff(float3 const & fall_off);
 		virtual float CosInnerAngle() const;
@@ -108,100 +102,118 @@ namespace KlayGE
 		virtual void Extend(float3 const & extend);
 
 	protected:
-		LightType type_;
-		int32_t attrib_;
-		bool enabled_;
-		float4 color_;
-		Quaternion quat_;
-		float3 pos_;
-		float3 falloff_;
-		float range_;
+		void CloneTo(LightSource& light) const;
 
-		function<void(LightSource&, float, float)> update_func_;
+	protected:
+		LightType type_;
+		int32_t attrib_ = 0;
+		float4 color_ = float4(0, 0, 0, 0);
+		float3 falloff_;
+		float range_ = -1;
+
+		std::function<void(LightSource&, float, float)> update_func_;
 	};
 
-	class KLAYGE_CORE_API AmbientLightSource : public LightSource
+	class KLAYGE_CORE_API AmbientLightSource final : public LightSource
 	{
 	public:
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
+
 		AmbientLightSource();
-		virtual ~AmbientLightSource();
+
+		SceneComponentPtr Clone() const override;
 
 		using LightSource::Attrib;
-		virtual void Attrib(int32_t attrib) KLAYGE_OVERRIDE;
+		virtual void Attrib(int32_t attrib) override;
 
-		virtual TexturePtr const & SkylightTexY() const KLAYGE_OVERRIDE;
-		virtual TexturePtr const & SkylightTexC() const KLAYGE_OVERRIDE;
-		virtual TexturePtr const & SkylightTex() const KLAYGE_OVERRIDE;
-		virtual void SkylightTex(TexturePtr const & tex_y, TexturePtr const & tex_c) KLAYGE_OVERRIDE;
-		virtual void SkylightTex(TexturePtr const & tex) KLAYGE_OVERRIDE;
-		virtual void SkylightTex(KlayGE::function<TexturePtr()> const & y_cube_tl,
-			KlayGE::function<TexturePtr()> const & c_cube_tl) KLAYGE_OVERRIDE;
-		virtual void SkylightTex(KlayGE::function<TexturePtr()> const & cube_tl) KLAYGE_OVERRIDE;
+		virtual TexturePtr const & SkylightTexY() const override;
+		virtual TexturePtr const & SkylightTexC() const override;
+		virtual TexturePtr const & SkylightTex() const override;
+		virtual void SkylightTex(TexturePtr const & tex_y, TexturePtr const & tex_c) override;
+		virtual void SkylightTex(TexturePtr const & tex) override;
 
 	private:
 		mutable TexturePtr sky_tex_y_;
 		mutable TexturePtr sky_tex_c_;
-		KlayGE::function<TexturePtr()> sky_tex_y_tl_;
-		KlayGE::function<TexturePtr()> sky_tex_c_tl_;
 	};
 
 	class KLAYGE_CORE_API PointLightSource : public LightSource
 	{
 	public:
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
+
 		PointLightSource();
-		virtual ~PointLightSource();
 
-		using LightSource::Position;
-		virtual void Position(float3 const & pos) KLAYGE_OVERRIDE;
-		using LightSource::Direction;
-		virtual void Direction(float3 const & dir) KLAYGE_OVERRIDE;
-		using LightSource::Rotation;
-		virtual void Rotation(Quaternion const & quat) KLAYGE_OVERRIDE;
-		void ModelMatrix(float4x4 const & model);
+		SceneComponentPtr Clone() const override;
 
-		virtual TexturePtr const & ProjectiveTexture() const KLAYGE_OVERRIDE;
-		virtual void ProjectiveTexture(TexturePtr const & tex) KLAYGE_OVERRIDE;
+		void BindSceneNode(SceneNode* node) override;
 
-		virtual ConditionalRenderPtr const & ConditionalRenderQuery(uint32_t index) const KLAYGE_OVERRIDE;
-		virtual CameraPtr const & SMCamera(uint32_t index) const KLAYGE_OVERRIDE;
+		void MainThreadUpdate(float app_time, float elapsed_time) override;
+
+		virtual TexturePtr const & ProjectiveTexture() const override;
+		virtual void ProjectiveTexture(TexturePtr const & tex) override;
+
+		virtual ConditionalRenderPtr const & ConditionalRenderQuery(uint32_t index) const override;
+		virtual CameraPtr const & SMCamera(uint32_t index) const override;
 
 	protected:
+		void CloneToPoint(PointLightSource& point_light) const;
 		void UpdateCameras();
 
 	protected:
 		TexturePtr projective_tex_;
 
-		array<ConditionalRenderPtr, 7> crs_;
-		array<CameraPtr, 6> sm_cameras_;
+		std::array<ConditionalRenderPtr, 7> crs_;
+		std::array<CameraPtr, 6> sm_cameras_;
 	};
 
-	class KLAYGE_CORE_API SpotLightSource : public LightSource
+	class KLAYGE_CORE_API SpotLightSource final : public LightSource
 	{
 	public:
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
+
 		SpotLightSource();
-		virtual ~SpotLightSource();
 
-		using LightSource::Position;
-		virtual void Position(float3 const & pos) KLAYGE_OVERRIDE;
-		using LightSource::Direction;
-		virtual void Direction(float3 const & dir) KLAYGE_OVERRIDE;
-		using LightSource::Rotation;
-		virtual void Rotation(Quaternion const & quat) KLAYGE_OVERRIDE;
-		virtual void ModelMatrix(float4x4 const & model) KLAYGE_OVERRIDE;
+		SceneComponentPtr Clone() const override;
 
-		virtual float CosInnerAngle() const KLAYGE_OVERRIDE;
-		virtual void InnerAngle(float angle) KLAYGE_OVERRIDE;
+		void BindSceneNode(SceneNode* node) override;
 
-		virtual float CosOuterAngle() const KLAYGE_OVERRIDE;
-		virtual void OuterAngle(float angle) KLAYGE_OVERRIDE;
+		void MainThreadUpdate(float app_time, float elapsed_time) override;
 
-		virtual float4 const & CosOuterInner() const KLAYGE_OVERRIDE;
+		virtual float CosInnerAngle() const override;
+		virtual void InnerAngle(float angle) override;
 
-		virtual TexturePtr const & ProjectiveTexture() const KLAYGE_OVERRIDE;
-		virtual void ProjectiveTexture(TexturePtr const & tex) KLAYGE_OVERRIDE;
+		virtual float CosOuterAngle() const override;
+		virtual void OuterAngle(float angle) override;
 
-		virtual ConditionalRenderPtr const & ConditionalRenderQuery(uint32_t index) const KLAYGE_OVERRIDE;
-		virtual CameraPtr const & SMCamera(uint32_t index) const KLAYGE_OVERRIDE;
+		virtual float4 const & CosOuterInner() const override;
+
+		virtual TexturePtr const & ProjectiveTexture() const override;
+		virtual void ProjectiveTexture(TexturePtr const & tex) override;
+
+		virtual ConditionalRenderPtr const & ConditionalRenderQuery(uint32_t index) const override;
+		virtual CameraPtr const & SMCamera(uint32_t index) const override;
 
 	protected:
 		void UpdateCamera();
@@ -215,56 +227,81 @@ namespace KlayGE
 		CameraPtr sm_camera_;
 	};
 
-	class KLAYGE_CORE_API DirectionalLightSource : public LightSource
+	class KLAYGE_CORE_API DirectionalLightSource final : public LightSource
 	{
 	public:
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
+
 		DirectionalLightSource();
-		virtual ~DirectionalLightSource();
+
+		SceneComponentPtr Clone() const override;
+
+		void BindSceneNode(SceneNode* node) override;
+
+		void MainThreadUpdate(float app_time, float elapsed_time) override;
 
 		using LightSource::Attrib;
-		virtual void Attrib(int32_t attrib) KLAYGE_OVERRIDE;
-	};
+		virtual void Attrib(int32_t attrib) override;
 
-	class KLAYGE_CORE_API SunLightSource : public LightSource
-	{
-	public:
-		SunLightSource();
-		virtual ~SunLightSource();
+		virtual CameraPtr const & SMCamera(uint32_t index) const override;
 
-		using LightSource::Attrib;
-		virtual void Attrib(int32_t attrib) KLAYGE_OVERRIDE;
-
-		virtual CameraPtr const & SMCamera(uint32_t index) const KLAYGE_OVERRIDE;
-
-		void UpdateSMCamera(Camera const & scene_camera);
+	protected:
+		void UpdateCamera();
 
 	protected:
 		CameraPtr sm_camera_;
 	};
 
-	class KLAYGE_CORE_API SphereAreaLightSource : public PointLightSource
+	class KLAYGE_CORE_API SphereAreaLightSource final : public PointLightSource
 	{
 	public:
-		SphereAreaLightSource();
-		virtual ~SphereAreaLightSource();
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
 
-		virtual float Radius() const KLAYGE_OVERRIDE;
-		virtual void Radius(float radius) KLAYGE_OVERRIDE;
+		SphereAreaLightSource();
+
+		SceneComponentPtr Clone() const override;
+
+		virtual float Radius() const override;
+		virtual void Radius(float radius) override;
 
 	protected:
 		float radius_;
 	};
 
-	class KLAYGE_CORE_API TubeAreaLightSource : public PointLightSource
+	class KLAYGE_CORE_API TubeAreaLightSource final : public PointLightSource
 	{
 	public:
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-missing-override"
+#endif
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+#if defined(KLAYGE_COMPILER_CLANGCL)
+#pragma clang diagnostic pop
+#endif
+
 		TubeAreaLightSource();
-		virtual ~TubeAreaLightSource();
+
+		SceneComponentPtr Clone() const override;
 
 		using LightSource::Falloff;
-		virtual void Falloff(float3 const & fall_off);
-		virtual float3 const & Extend() const KLAYGE_OVERRIDE;
-		virtual void Extend(float3 const & extend) KLAYGE_OVERRIDE;
+		void Falloff(float3 const & fall_off) override;
+		float3 const & Extend() const override;
+		void Extend(float3 const & extend) override;
 
 	protected:
 		float3 extend_;

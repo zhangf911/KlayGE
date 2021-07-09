@@ -37,23 +37,68 @@
 
 namespace KlayGE
 {
-	STDMETHODIMP CArchiveOpenCallback::SetTotal(const UInt64* /*files*/, const UInt64* /*bytes*/)
+	ArchiveOpenCallback::ArchiveOpenCallback(std::string_view pw) noexcept
+		: password_is_defined_(!pw.empty())
 	{
-		return S_OK;
+		Convert(password_, pw);
 	}
 
-	STDMETHODIMP CArchiveOpenCallback::SetCompleted(const UInt64* /*files*/, const UInt64* /*bytes*/)
+	ArchiveOpenCallback::~ArchiveOpenCallback() noexcept = default;
+
+	STDMETHODIMP_(ULONG) ArchiveOpenCallback::AddRef() noexcept
 	{
-		return S_OK;
+		++ ref_count_;
+		return ref_count_;
 	}
 
-	STDMETHODIMP CArchiveOpenCallback::CryptoGetTextPassword(BSTR* password)
+	STDMETHODIMP_(ULONG) ArchiveOpenCallback::Release() noexcept
 	{
-		if (!password_is_defined_)
+		-- ref_count_;
+		if (0 == ref_count_)
 		{
-			return E_ABORT;
+			delete this;
+			return 0;
+		}
+		return ref_count_;
+	}
+
+	STDMETHODIMP ArchiveOpenCallback::QueryInterface(REFGUID iid, void** out_object) noexcept
+	{
+		if (IID_ICryptoGetTextPassword == iid)
+		{
+			*out_object = static_cast<ICryptoGetTextPassword*>(this);
+			this->AddRef();
+			return S_OK;
+		}
+		else if (IID_IArchiveOpenCallback == iid)
+		{
+			*out_object = static_cast<IArchiveOpenCallback*>(this);
+			this->AddRef();
+			return S_OK;
 		}
 		else
+		{
+			return E_NOINTERFACE;
+		}
+	}
+
+	STDMETHODIMP ArchiveOpenCallback::SetTotal(UInt64 const * files, UInt64 const * bytes) noexcept
+	{
+		KFL_UNUSED(files);
+		KFL_UNUSED(bytes);
+		return S_OK;
+	}
+
+	STDMETHODIMP ArchiveOpenCallback::SetCompleted(UInt64 const * files, UInt64 const * bytes) noexcept
+	{
+		KFL_UNUSED(files);
+		KFL_UNUSED(bytes);
+		return S_OK;
+	}
+
+	STDMETHODIMP ArchiveOpenCallback::CryptoGetTextPassword(BSTR* password) noexcept
+	{
+		if (password_is_defined_)
 		{
 #ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
 			*password = SysAllocString(password_.c_str());
@@ -62,11 +107,9 @@ namespace KlayGE
 #endif
 			return S_OK;
 		}
-	}
-
-	void CArchiveOpenCallback::Init(std::string const & pw)
-	{
-		password_is_defined_ = !pw.empty();
-		Convert(password_, pw);
+		else
+		{
+			return E_ABORT;
+		}
 	}
 }

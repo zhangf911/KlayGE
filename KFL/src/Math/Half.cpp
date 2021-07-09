@@ -34,7 +34,7 @@
 
 namespace KlayGE
 {
-	half::half(float f)
+	half::half(float f) noexcept
 	{
 		union FNI
 		{
@@ -90,7 +90,7 @@ namespace KlayGE
 		}
 	}
 
-	half::operator float() const
+	half::operator float() const noexcept
 	{
 		int32_t ret;
 
@@ -141,28 +141,28 @@ namespace KlayGE
 		return inf.f;
 	}
 
-	half half::pos_inf()
+	half half::pos_inf() noexcept
 	{
 		half h;
 		h.value_ = 0x7C00;
 		return h;
 	}
 
-	half half::neg_inf()
+	half half::neg_inf() noexcept
 	{
 		half h;
 		h.value_ = 0xFC00;
 		return h;
 	}
 
-	half half::q_nan()
+	half half::q_nan() noexcept
 	{
 		half h;
 		h.value_ = 0x7FFF;
 		return h;
 	}
 
-	half half::s_nan()
+	half half::s_nan() noexcept
 	{
 		half h;
 		h.value_ = 0x7DFF;
@@ -170,31 +170,31 @@ namespace KlayGE
 	}
 
 
-	half const & half::operator+=(half const & rhs)
+	half const & half::operator+=(half const & rhs) noexcept
 	{
 		*this = half(float(*this) + float(rhs));
 		return *this;
 	}
 
-	half const & half::operator-=(half const & rhs)
+	half const & half::operator-=(half const & rhs) noexcept
 	{
 		*this = half(float(*this) - float(rhs));
 		return *this;
 	}
 
-	half const & half::operator*=(half const & rhs)
+	half const & half::operator*=(half const & rhs) noexcept
 	{
 		*this = half(float(*this) * float(rhs));
 		return *this;
 	}
 
-	half const & half::operator/=(half const & rhs)
+	half const & half::operator/=(half const & rhs) noexcept
 	{
 		*this = half(float(*this) / float(rhs));
 		return *this;
 	}
 
-	half& half::operator=(half const & rhs)
+	half& half::operator=(half const & rhs) noexcept
 	{
 		if (this != &rhs)
 		{
@@ -204,19 +204,19 @@ namespace KlayGE
 	}
 
 	// Ò»Ôª²Ù×÷·û
-	half const half::operator+() const
+	half const half::operator+() const noexcept
 	{
 		return *this;
 	}
 
-	half const half::operator-() const
+	half const half::operator-() const noexcept
 	{
 		half temp(*this);
 		temp.value_ = -temp.value_;
 		return temp;
 	}
 
-	bool half::operator==(half const & rhs)
+	bool half::operator==(half const & rhs) noexcept
 	{
 		return value_ == rhs.value_;
 	}

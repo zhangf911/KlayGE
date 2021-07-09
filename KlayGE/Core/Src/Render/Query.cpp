@@ -16,20 +16,5 @@
 
 namespace KlayGE
 {
-	class NullQuery : public Query
-	{
-	public:
-		void Begin()
-		{
-		}
-		void End()
-		{
-		}
-	};
-
-	QueryPtr Query::NullObject()
-	{
-		static QueryPtr obj = MakeSharedPtr<NullQuery>();
-		return obj;
-	}
+	Query::~Query() noexcept = default;
 }

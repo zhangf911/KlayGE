@@ -46,7 +46,7 @@ namespace KlayGE
 {
 	uint32_t const KFONT_VERSION = 2;
 
-	mutex singleton_mutex;
+	std::mutex singleton_mutex;
 
 	typedef int (MY_STD_CALL *LzmaCompressFunc)(unsigned char* dest, size_t* destLen, unsigned char const * src, size_t srcLen,
 		unsigned char* outProps, size_t* outPropsSize, /* *outPropsSize must be = 5 */
@@ -67,10 +67,10 @@ namespace KlayGE
 		{
 			if (!instance_)
 			{
-				unique_lock<mutex> lock(singleton_mutex);
+				std::lock_guard<std::mutex> lock(singleton_mutex);
 				if (!instance_)
 				{
-					instance_ = MakeSharedPtr<LZMALoader>();
+					instance_ = MakeUniquePtr<LZMALoader>();
 				}
 			}
 			return *instance_;
@@ -112,9 +112,11 @@ namespace KlayGE
 		LzmaCompressFunc lzma_compress_func_;
 		LzmaUncompressFunc lzma_uncompress_func_;
 
-		static shared_ptr<LZMALoader> instance_;
+		static std::unique_ptr<LZMALoader> instance_;
 	};
-	shared_ptr<LZMALoader> LZMALoader::instance_;
+	std::unique_ptr<LZMALoader> LZMALoader::instance_;
+
+	KFont::KFont() = default;
 
 	bool KFont::Load(std::string const & file_name)
 	{
@@ -147,26 +149,24 @@ namespace KlayGE
 
 				kfont_input->seekg(header.start_ptr, std::ios_base::beg);
 
-				std::vector<std::pair<int32_t, int32_t> > temp_char_index(header.non_empty_chars);
+				std::vector<std::pair<int32_t, int32_t>> temp_char_index(header.non_empty_chars);
 				kfont_input->read(&temp_char_index[0], temp_char_index.size() * sizeof(temp_char_index[0]));
-				std::vector<std::pair<int32_t, uint32_t> > temp_char_advance(header.validate_chars);
+				std::vector<std::pair<int32_t, uint32_t>> temp_char_advance(header.validate_chars);
 				kfont_input->read(&temp_char_advance[0], temp_char_advance.size() * sizeof(temp_char_advance[0]));
 
-				typedef KLAYGE_DECLTYPE(temp_char_index) TCIType;
-				KLAYGE_FOREACH(TCIType::reference ci, temp_char_index)
+				for (auto& ci : temp_char_index)
 				{
 					ci.first = LE2Native(ci.first);
 					ci.second = LE2Native(ci.second);
 
-					char_index_advance_.insert(std::make_pair(ci.first, std::make_pair(ci.second, 0)));
+					char_index_advance_.emplace(ci.first, std::make_pair(ci.second, 0));
 				}
-				typedef KLAYGE_DECLTYPE(temp_char_advance) TCAType;
-				KLAYGE_FOREACH(TCAType::reference ca, temp_char_advance)
+				for (auto& ca : temp_char_advance)
 				{
 					ca.first = LE2Native(ca.first);
 					ca.second = LE2Native(ca.second);
 
-					KLAYGE_AUTO(iter, char_index_advance_.find(ca.first));
+					auto iter = char_index_advance_.find(ca.first);
 					if (iter != char_index_advance_.end())
 					{
 						iter->second.second = ca.second;
@@ -180,8 +180,7 @@ namespace KlayGE
 				char_info_.resize(header.non_empty_chars);
 				kfont_input->read(&char_info_[0], char_info_.size() * sizeof(char_info_[0]));
 
-				typedef KLAYGE_DECLTYPE(char_info_) CIType;
-				KLAYGE_FOREACH(CIType::reference ci, char_info_)
+				for (auto& ci : char_info_)
 				{
 					ci.left = LE2Native(ci.left);
 					ci.top = LE2Native(ci.top);
@@ -193,7 +192,6 @@ namespace KlayGE
 				distances_lzma_start_ = kfont_input->tellg();
 				size_t distances_lzma_size = 0;
 
-				std::vector<uint8_t> dist;
 				for (uint32_t i = 0; i < header.non_empty_chars; ++ i)
 				{
 					distances_addr_[i] = distances_lzma_size;
@@ -235,17 +233,15 @@ namespace KlayGE
 			kfont_output.write(reinterpret_cast<char*>(&header), sizeof(header));
 
 			std::vector<int32_t> chars;
-			typedef KLAYGE_DECLTYPE(char_index_advance_) CIAType;
-			KLAYGE_FOREACH(CIAType::reference cia, char_index_advance_)
+			for (auto const & cia : char_index_advance_)
 			{
 				chars.push_back(cia.first);
 			}
 			std::sort(chars.begin(), chars.end());
 
-			std::vector<std::pair<int32_t, int32_t> > temp_char_index;
-			std::vector<std::pair<int32_t, uint32_t> > temp_char_advance;
-			typedef KLAYGE_DECLTYPE(chars) CharsType;
-			KLAYGE_FOREACH(CharsType::reference ch, chars)
+			std::vector<std::pair<int32_t, int32_t>> temp_char_index;
+			std::vector<std::pair<int32_t, uint32_t>> temp_char_advance;
+			for (auto const & ch : chars)
 			{
 				std::pair<int32_t, uint32_t> const & ci = char_index_advance_[ch];
 
@@ -258,28 +254,20 @@ namespace KlayGE
 			BOOST_ASSERT(temp_char_index.size() == char_info_.size());
 			BOOST_ASSERT(temp_char_advance.size() == char_index_advance_.size());
 
-			typedef KLAYGE_DECLTYPE(temp_char_index) TCIType;
-			KLAYGE_FOREACH(TCIType::reference ci, temp_char_index)
+			for (auto const & ci : temp_char_index)
 			{
-				TCIType::value_type tci;
-				tci.first = Native2LE(ci.first);
-				tci.second = Native2LE(ci.second);
-
+				auto tci = std::make_pair(Native2LE(ci.first), Native2LE(ci.second));
 				kfont_output.write(reinterpret_cast<char*>(&tci), sizeof(tci));
 			}
-			typedef KLAYGE_DECLTYPE(temp_char_advance) TCAType;
-			KLAYGE_FOREACH(TCAType::reference ca, temp_char_advance)
+			for (auto const & ca : temp_char_advance)
 			{
-				TCAType::value_type tca;
-				tca.first = Native2LE(ca.first);
-				tca.second = Native2LE(ca.second);
-
+				auto tca = std::make_pair(Native2LE(ca.first), Native2LE(ca.second));
 				kfont_output.write(reinterpret_cast<char*>(&tca), sizeof(tca));
 			}
 
-			for (size_t i = 0; i < temp_char_index.size(); ++ i)
+			for (auto const & ci : temp_char_index)
 			{
-				int const index = temp_char_index[i].second;
+				int const index = ci.second;
 
 				int16_t tmp;
 				tmp = Native2LE(char_info_[index].top);
@@ -292,9 +280,9 @@ namespace KlayGE
 				kfont_output.write(reinterpret_cast<char*>(&tmp), sizeof(tmp));
 			}
 
-			for (size_t i = 0; i < temp_char_index.size(); ++ i)
+			for (auto const & ci : temp_char_index)
 			{
-				uint32_t index = temp_char_index[i].second;
+				uint32_t index = ci.second;
 				size_t addr = distances_addr_[index];
 				uint64_t len = distances_addr_[index + 1] - addr;
 				uint64_t len_le = Native2LE(len);
@@ -326,7 +314,7 @@ namespace KlayGE
 
 	std::pair<int32_t, uint32_t> const & KFont::CharIndexAdvance(wchar_t ch) const
 	{
-		KLAYGE_AUTO(iter, char_index_advance_.find(ch));
+		auto iter = char_index_advance_.find(ch);
 		if (iter != char_index_advance_.end())
 		{
 			return iter->second;
@@ -355,17 +343,18 @@ namespace KlayGE
 
 	void KFont::GetDistanceData(uint8_t* p, uint32_t pitch, int32_t index) const
 	{
-		std::vector<uint8_t> decoded(char_size_ * char_size_);
+		size_t const decoded_size = char_size_ * char_size_;
+		auto decoded = MakeUniquePtr<uint8_t[]>(decoded_size);
 
 		uint32_t size;
 		this->GetLZMADistanceData(nullptr, size, index);
 
-		std::vector<uint8_t> in_data(size);
+		auto in_data = MakeUniquePtr<uint8_t[]>(size);
 		this->GetLZMADistanceData(&in_data[0], size, index);
 
-		SizeT s_out_len = static_cast<SizeT>(decoded.size());
+		SizeT s_out_len = decoded_size;
 
-		SizeT s_src_len = static_cast<SizeT>(in_data.size() - LZMA_PROPS_SIZE);
+		SizeT s_src_len = static_cast<SizeT>(size - LZMA_PROPS_SIZE);
 		LZMALoader::Instance().LzmaUncompress(static_cast<Byte*>(&decoded[0]), &s_out_len, &in_data[LZMA_PROPS_SIZE], &s_src_len,
 			&in_data[0], LZMA_PROPS_SIZE);
 
@@ -445,25 +434,23 @@ namespace KlayGE
 		{
 			ci = -1;
 		}
-		char_index_advance_.insert(std::make_pair(ch, std::make_pair(ci, adv)));
+		char_index_advance_.emplace(ch, std::make_pair(ci, adv));
 	}
 
 	void KFont::Compact()
 	{
 		std::vector<int32_t> chars;
-		typedef KLAYGE_DECLTYPE(char_index_advance_) CIAType;
-		KLAYGE_FOREACH(CIAType::reference cia, char_index_advance_)
+		for (auto const & cia : char_index_advance_)
 		{
 			chars.push_back(cia.first);
 		}
 		std::sort(chars.begin(), chars.end());
 
-		unordered_map<int32_t, std::pair<int32_t, uint32_t> > new_char_index_advance;
+		std::unordered_map<int32_t, std::pair<int32_t, uint32_t>> new_char_index_advance;
 		std::vector<font_info> new_char_info;
 		std::vector<size_t> new_distances_addr;
 		std::vector<uint8_t> new_distances_lzma;
-		typedef KLAYGE_DECLTYPE(chars) CharsType;
-		KLAYGE_FOREACH(CharsType::reference ch, chars)
+		for (auto const & ch : chars)
 		{
 			std::pair<int32_t, uint32_t> const & ci = char_index_advance_[ch];
 			int32_t new_ci;
@@ -484,7 +471,7 @@ namespace KlayGE
 			{
 				new_ci = -1;
 			}
-			new_char_index_advance.insert(std::make_pair(ch, std::make_pair(new_ci, ci.second)));
+			new_char_index_advance.emplace(ch, std::make_pair(new_ci, ci.second));
 		}
 		new_distances_addr.push_back(new_distances_lzma.size());
 

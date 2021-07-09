@@ -28,77 +28,110 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _SCRIPT_HPP
-#define _SCRIPT_HPP
+#ifndef KLAYGE_CORE_SCRIPT_HPP
+#define KLAYGE_CORE_SCRIPT_HPP
 
 #pragma once
 
-#include <vector>
 #include <string>
 
-#include <boost/noncopyable.hpp>
-#include <boost/any.hpp>
+#include <KFL/CXX2a/span.hpp>
 
 namespace KlayGE
 {
-	typedef std::vector<boost::any> AnyDataListType;
-
-	class KLAYGE_CORE_API ScriptModule
+	class KLAYGE_CORE_API ScriptVariable : boost::noncopyable
 	{
-	private:
-		template <typename tuple_type, int N>
-		struct Tuple2Vector
-		{
-			static AnyDataListType Do(tuple_type const & t)
-			{
-				AnyDataListType ret = Tuple2Vector<tuple_type, N - 1>::Do(t);
-				ret.push_back(get<N - 1>(t));
-				return ret;
-			}
-		};
-
-		template <typename tuple_type>
-		struct Tuple2Vector<tuple_type, 1>
-		{
-			static AnyDataListType Do(tuple_type const & t)
-			{
-				return AnyDataListType(1, get<0>(t));
-			}
-		};
-
 	public:
-		ScriptModule();
-		virtual ~ScriptModule();
+		virtual ~ScriptVariable() noexcept;
 
-		template <typename TupleType>
-		boost::any Call(std::string const & func_name, TupleType const & t)
+		virtual ScriptVariable& operator=(std::string const& value);
+		virtual ScriptVariable& operator=(std::string_view value);
+		virtual ScriptVariable& operator=(char const* value);
+		virtual ScriptVariable& operator=(char* value);
+		virtual ScriptVariable& operator=(std::wstring const& value);
+		virtual ScriptVariable& operator=(std::wstring_view value);
+		virtual ScriptVariable& operator=(wchar_t const* value);
+		virtual ScriptVariable& operator=(wchar_t* value);
+		virtual ScriptVariable& operator=(int8_t value);
+		virtual ScriptVariable& operator=(int16_t value);
+		virtual ScriptVariable& operator=(int32_t value);
+		virtual ScriptVariable& operator=(int64_t value);
+		virtual ScriptVariable& operator=(uint8_t value);
+		virtual ScriptVariable& operator=(uint16_t value);
+		virtual ScriptVariable& operator=(uint32_t value);
+		virtual ScriptVariable& operator=(uint64_t value);
+		virtual ScriptVariable& operator=(float value);
+		virtual ScriptVariable& operator=(double value);
+		virtual ScriptVariable& operator=(std::span<ScriptVariablePtr const> value);
+
+		virtual bool TryValue(std::string& value) const;
+		virtual bool TryValue(std::wstring& value) const;
+		virtual bool TryValue(int8_t& value) const;
+		virtual bool TryValue(int16_t& value) const;
+		virtual bool TryValue(int32_t& value) const;
+		virtual bool TryValue(int64_t& value) const;
+		virtual bool TryValue(uint8_t& value) const;
+		virtual bool TryValue(uint16_t& value) const;
+		virtual bool TryValue(uint32_t& value) const;
+		virtual bool TryValue(uint64_t& value) const;
+		virtual bool TryValue(float& value) const;
+		virtual bool TryValue(double& value) const;
+		virtual bool TryValue(std::vector<ScriptVariablePtr>& value) const;
+
+		template <typename T>
+		void Value(T& value) const
 		{
-			AnyDataListType v(Tuple2Vector<TupleType, tuple_size<TupleType>::value>::Do(t));
-			return Call(func_name, v);
+			if (!this->TryValue(value))
+			{
+				throw std::bad_cast();
+			}
 		}
-
-		virtual boost::any Value(std::string const & name);
-		virtual boost::any Call(std::string const & func_name, const AnyDataListType& args);
-		virtual boost::any RunString(std::string const & script);
 	};
 
-	typedef shared_ptr<ScriptModule> ScriptModulePtr;
+	class KLAYGE_CORE_API ScriptModule : boost::noncopyable
+	{
+	public:
+		ScriptModule() noexcept;
+		virtual ~ScriptModule() noexcept;
 
-	// 实现脚本引擎的功能
-	/////////////////////////////////////////////////////////////////////////////////
+		virtual ScriptVariablePtr Value(std::string const & name) = 0;
+		virtual ScriptVariablePtr Call(std::string const & func_name, std::span<ScriptVariablePtr const> args) = 0;
+		virtual ScriptVariablePtr RunString(std::string const & script) = 0;
+
+		virtual ScriptVariablePtr MakeVariable(std::string const& value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(std::string_view value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(char const* value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(char* value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(std::wstring const& value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(std::wstring_view value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(wchar_t const* value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(wchar_t* value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(int8_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(int16_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(int32_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(int64_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(uint8_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(uint16_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(uint32_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(uint64_t value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(float value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(double value) const = 0;
+		virtual ScriptVariablePtr MakeVariable(std::span<ScriptVariablePtr const> value) const = 0;
+	};
+
+	typedef std::shared_ptr<ScriptModule> ScriptModulePtr;
+
+
 	class KLAYGE_CORE_API ScriptEngine : boost::noncopyable
 	{
 	public:
-		ScriptEngine();
-		virtual ~ScriptEngine();
+		ScriptEngine() noexcept;
+		virtual ~ScriptEngine() noexcept;
 
 		void Suspend();
 		void Resume();
 
-		static ScriptEnginePtr NullObject();
-
-		// 创建一个新的脚本模块
-		virtual ScriptModulePtr CreateModule(std::string const & name);
+		virtual ScriptModulePtr CreateModule(std::string const & name) = 0;
 
 	private:
 		virtual void DoSuspend() = 0;
@@ -106,4 +139,4 @@ namespace KlayGE
 	};
 }
 
-#endif		// _SCRIPT_HPP
+#endif		// KLAYGE_CORE_SCRIPT_HPP

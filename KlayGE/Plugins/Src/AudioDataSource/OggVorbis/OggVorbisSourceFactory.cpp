@@ -14,37 +14,39 @@
 #include <KFL/Util.hpp>
 
 #include <KlayGE/OggVorbis/OggVorbisSource.hpp>
-#include <KlayGE/OggVorbis/OggVorbisSourceFactory.hpp>
 
 namespace KlayGE
 {
-	class OggVorbisAudioDataSourceFactory : public AudioDataSourceFactory
+	class OggVorbisAudioDataSourceFactory final : public AudioDataSourceFactory
 	{
 	public:
-		std::wstring const & Name() const
+		std::wstring const & Name() const override
 		{
 			static std::wstring const name(L"OggVorbis Audio Data Source Factory");
 			return name;
 		}
 
 	private:
-		AudioDataSourcePtr MakeAudioDataSource()
+		AudioDataSourcePtr MakeAudioDataSource() override
 		{
 			return MakeSharedPtr<OggVorbisSource>();
 		}
 
-		virtual void DoSuspend() KLAYGE_OVERRIDE
+		virtual void DoSuspend() override
 		{
 			// TODO
 		}
-		virtual void DoResume() KLAYGE_OVERRIDE
+		virtual void DoResume() override
 		{
 			// TODO
 		}
 	};
 }
 
-void MakeAudioDataSourceFactory(KlayGE::AudioDataSourceFactoryPtr& ptr)
+extern "C"
 {
-	ptr = KlayGE::MakeSharedPtr<KlayGE::OggVorbisAudioDataSourceFactory>();
+	KLAYGE_SYMBOL_EXPORT void MakeAudioDataSourceFactory(std::unique_ptr<KlayGE::AudioDataSourceFactory>& ptr)
+	{
+		ptr = KlayGE::MakeUniquePtr<KlayGE::OggVorbisAudioDataSourceFactory>();
+	}
 }

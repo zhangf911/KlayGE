@@ -49,6 +49,7 @@ namespace KlayGE
 		uint16_t msb;
 		uint16_t lsb;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(ETC1Block) == 8);
 
 	struct ETC2TModeBlock
 	{
@@ -59,6 +60,7 @@ namespace KlayGE
 		uint16_t msb;
 		uint16_t lsb;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(ETC2TModeBlock) == 8);
 
 	struct ETC2HModeBlock
 	{
@@ -69,6 +71,7 @@ namespace KlayGE
 		uint16_t msb;
 		uint16_t lsb;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(ETC2HModeBlock) == 8);
 
 	struct ETC2PlanarModeBlock
 	{
@@ -81,6 +84,7 @@ namespace KlayGE
 		uint8_t rv_gv;
 		uint8_t gv_bv;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(ETC2PlanarModeBlock) == 8);
 
 	union ETC2Block
 	{
@@ -89,11 +93,12 @@ namespace KlayGE
 		ETC2HModeBlock etc2_h_mode;
 		ETC2PlanarModeBlock etc2_planar_mode;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(ETC2Block) == 8);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 	#pragma pack(pop)
 #endif
 
-	class KLAYGE_CORE_API TexCompressionETC1 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionETC1 final : public TexCompression
 	{
 	public:
 		struct Params
@@ -129,8 +134,8 @@ namespace KlayGE
 	public:
 		TexCompressionETC1();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 		uint64_t EncodeETC1BlockInternal(ETC1Block& output, ARGBColor32 const * argb, TexCompressionMethod method);
 		void DecodeETCIndividualModeInternal(ARGBColor32* argb, ETC1Block const & etc1) const;
@@ -184,10 +189,6 @@ namespace KlayGE
 		bool EvaluateSolutionFast(ETC1SolutionCoordinates const & coords, PotentialSolution& trial_solution, PotentialSolution& best_solution);
 
 	private:
-		static uint8_t quant_5_tab_[256 + 16];
-		static uint16_t etc1_inverse_lookup_[2 * 8 * 4][256];
-		static bool lut_inited_;
-
 		Params const * params_;
 		Results* result_;
 
@@ -200,41 +201,38 @@ namespace KlayGE
 		uint32_t const * sorted_luma_indices_;
 		uint32_t* sorted_luma_ptr_;
 
-		uint8_t selectors_[8];
-		uint8_t best_selectors_[8];
-
 		PotentialSolution best_solution_;
 		PotentialSolution trial_solution_;
 		uint8_t temp_selectors_[8];
 	};
 
-	class KLAYGE_CORE_API TexCompressionETC2RGB8 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionETC2RGB8 final : public TexCompression
 	{
 	public:
 		TexCompressionETC2RGB8();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 		void DecodeETCTModeInternal(ARGBColor32* argb, ETC2TModeBlock const & etc2, bool alpha);
 		void DecodeETCHModeInternal(ARGBColor32* argb, ETC2HModeBlock const & etc2, bool alpha);
 		void DecodeETCPlanarModeInternal(ARGBColor32* argb, ETC2PlanarModeBlock const & etc2);
 
 	private:
-		TexCompressionETC1Ptr etc1_codec_;
+		std::unique_ptr<TexCompressionETC1> etc1_codec_;
 	};
 
-	class KLAYGE_CORE_API TexCompressionETC2RGB8A1 : public TexCompression
+	class KLAYGE_CORE_API TexCompressionETC2RGB8A1 final : public TexCompression
 	{
 	public:
 		TexCompressionETC2RGB8A1();
 
-		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) KLAYGE_OVERRIDE;
-		virtual void DecodeBlock(void* output, void const * input) KLAYGE_OVERRIDE;
+		virtual void EncodeBlock(void* output, void const * input, TexCompressionMethod method) override;
+		virtual void DecodeBlock(void* output, void const * input) override;
 
 	private:
-		TexCompressionETC1Ptr etc1_codec_;
-		TexCompressionETC2RGB8Ptr etc2_rgb8_codec_;
+		std::unique_ptr<TexCompressionETC1> etc1_codec_;
+		std::unique_ptr<TexCompressionETC2RGB8> etc2_rgb8_codec_;
 	};
 }
 

@@ -22,15 +22,11 @@
 #include <list>
 #include <KlayGE/Socket.hpp>
 
-#ifndef KLAYGE_PLATFORM_WINDOWS_RUNTIME
-
 namespace KlayGE
 {
-	typedef std::list<std::vector<char> > SendQueueType;
-
 	uint32_t const Max_Buffer(64);
 
-	class Processor
+	class Processor : boost::noncopyable
 	{
 	public:
 		virtual ~Processor()
@@ -55,14 +51,14 @@ namespace KlayGE
 		std::string		name;
 		sockaddr_in		addr;
 
-		uint32_t				time;
+		uint32_t		time;
 
-		SendQueueType	msgs;
+		std::list<std::vector<char>> msgs;
 	};
 
-	class KLAYGE_CORE_API Lobby
+	class KLAYGE_CORE_API Lobby final : boost::noncopyable
 	{
-		typedef std::vector<std::pair<uint32_t, PlayerDes> >	PlayerAddrs;
+		typedef std::vector<std::pair<uint32_t, PlayerDes>>	PlayerAddrs;
 		typedef PlayerAddrs::iterator		PlayerAddrsIter;
 
 	public:
@@ -109,8 +105,6 @@ namespace KlayGE
 		std::string		name_;
 	};
 }
-
-#endif
 
 #endif			// _LOBBY_HPP
 

@@ -50,13 +50,17 @@ enum GLSLVersion
 	GSV_430,			// GL 4.3
 	GSV_440,			// GL 4.4
 	GSV_450,			// GL 4.5
+	GSV_460,			// GL 4.6
 
-	GSV_100_ES = 10000,	// GL ES 2.0
+	GSV_100_ES,			// GL ES 2.0
 	GSV_300_ES,			// GL ES 3.0
-	GSV_310_ES			// GL ES 3.1
+	GSV_310_ES,			// GL ES 3.1
+	GSV_320_ES,			// GL ES 3.2
+
+	GSV_NumVersions
 };
 
-enum GLSLRules
+enum GLSLRules : uint32_t
 {
 	GSR_UniformBlockBinding = 1UL << 0,		// Set means allow uniform block layout bindings e.g.layout(binding=N) uniform {};.
 	GSR_GlobalUniformsInUBO = 1UL << 1,		// Set means collect global uniforms in uniform block named $Globals.
@@ -81,7 +85,10 @@ enum GLSLRules
 	GSR_EXTDrawBuffers = 1UL << 20,
 	GSR_OESStandardDerivatives = 1UL << 21,
 	GSR_EXTFragDepth = 1UL << 22,
-	GSR_ForceUInt32 = 0xFFFFFFFF
+	GSR_EXTTessellationShader = 1UL << 23,
+	GSR_PrecisionOnSampler = 1UL << 24,
+	GSR_ExplicitMultiSample = 1UL << 25,
+	GSR_EXTVertexShaderLayer = 1UL << 26,
 };
 
 struct RegisterDesc
@@ -95,30 +102,49 @@ struct RegisterDesc
 struct HSForkPhase
 {
 	uint32_t fork_instance_count;
-	std::vector<KlayGE::shared_ptr<ShaderDecl>> dcls;
-	std::vector<KlayGE::shared_ptr<ShaderInstruction> > insns;//instructions
+	std::vector<std::shared_ptr<ShaderDecl>> dcls;
+	std::vector<std::shared_ptr<ShaderInstruction>> insns;//instructions
 	
 	HSForkPhase()
-		:fork_instance_count(0){}
+		: fork_instance_count(0)
+	{
+	}
+};
+
+struct HSJoinPhase
+{
+	uint32_t join_instance_count;
+	std::vector<std::shared_ptr<ShaderDecl>> dcls;
+	std::vector<std::shared_ptr<ShaderInstruction>> insns;//instructions
+	
+	HSJoinPhase()
+		: join_instance_count(0)
+	{
+	}
 };
 
 struct HSControlPointPhase
 {
-	std::vector<KlayGE::shared_ptr<ShaderDecl>> dcls;
-	std::vector<KlayGE::shared_ptr<ShaderInstruction> > insns;//instructions
+	std::vector<std::shared_ptr<ShaderDecl>> dcls;
+	std::vector<std::shared_ptr<ShaderInstruction>> insns;//instructions
 };
 
-class GLSLGen
+class GLSLGen final
 {
 public:
 	static uint32_t DefaultRules(GLSLVersion version);
 
-	void FeedDXBC(KlayGE::shared_ptr<ShaderProgram> const & program, bool has_gs, GLSLVersion version, uint32_t glsl_rules);
+	void FeedDXBC(std::shared_ptr<ShaderProgram> const & program,
+		bool has_gs, bool has_ps, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
+		GLSLVersion version, uint32_t glsl_rules);
 	void ToGLSL(std::ostream& out);
-	void ToHSForkPhases(std::ostream& out);
 	void ToHSControlPointPhase(std::ostream& out);
+	void ToHSForkPhases(std::ostream& out);
+	void ToHSJoinPhases(std::ostream& out);
 
 private:
+	void ToStructs(std::ostream& out);
+	void ToType(std::ostream& out, DXBCShaderTypeDesc const& type_desc) const;
 	void ToDeclarations(std::ostream& out);
 	void ToDclInterShaderInputRecords(std::ostream& out);
 	void ToDclInterShaderOutputRecords(std::ostream& out);
@@ -128,16 +154,21 @@ private:
 	void ToDeclInterShaderOutputRegisters(std::ostream& out) const;
 	void ToCopyToInterShaderOutputRecords(std::ostream& out) const;
 	void ToDclInterShaderPatchConstantRegisters(std::ostream& out);
-	void ToCopyToInterShaderPatchConstantRecords(std::ostream& out)const;
-	void ToCopyToInterShaderPatchConstantRegisters(std::ostream& out)const;
+	void ToCopyToInterShaderPatchConstantRecords(std::ostream& out) const;
+	void ToCopyToInterShaderPatchConstantRegisters(std::ostream& out) const;
 	void ToDefaultHSControlPointPhase(std::ostream& out)const;
 	void ToDeclaration(std::ostream& out, ShaderDecl const & dcl);
 	void ToInstruction(std::ostream& out, ShaderInstruction const & insn) const;
 	void ToOperands(std::ostream& out, ShaderOperand const & op, uint32_t imm_as_type,
 		bool mask = true, bool dcl_array = false, bool no_swizzle = false, bool no_idx = false, bool no_cast = false,
 		ShaderInputType const & sit = SIT_UNDEFINED) const;
+	ShaderImmType OperandAsCBufferType(
+		uint32_t imm_as_type, uint32_t offset, uint32_t var_start_offset, DXBCShaderTypeDesc const& var_type_desc) const;
 	ShaderImmType OperandAsType(ShaderOperand const & op, uint32_t imm_as_type) const;
 	int ToSingleComponentSelector(std::ostream& out, ShaderOperand const & op, int i, bool dot = true) const;
+	void ToOperandName(std::ostream& out, ShaderOperand const& op, DXBCShaderTypeDesc const& type_desc, const char* var_name,
+		uint32_t var_start_offset, std::vector<DXBCShaderVariable> const& cb_vars, uint32_t offset, bool contain_multi_var,
+		bool dynamic_indexed, uint32_t register_index, uint32_t num_selectors, bool no_swizzle, bool& need_comps) const;
 	void ToOperandName(std::ostream& out, ShaderOperand const & op, ShaderImmType as_type,
 		bool* need_idx, bool* need_comps, bool no_swizzle = false, bool no_idx = false,
 		ShaderInputType const & sit = SIT_UNDEFINED) const;
@@ -172,22 +203,30 @@ private:
 	void FindLabels();
 	void FindEndOfProgram();
 	void FindTempDcls();
-	void FindHSForkPhases();
 	void FindHSControlPointPhase();
+	void FindHSForkPhases();
+	void FindHSJoinPhases();
+	ShaderImmType FindTextureReturnType(ShaderOperand const & op) const;
 
 private:
-	KlayGE::shared_ptr<ShaderProgram> program_;
+	std::shared_ptr<ShaderProgram> program_;
 
 	ShaderType shader_type_;
 	bool has_gs_;
+	bool has_ps_;
+	ShaderTessellatorPartitioning ds_partitioning_;
+	ShaderTessellatorOutputPrimitive ds_output_primitive_;
 	std::vector<DclIndexRangeInfo> idx_range_info_;
 	std::vector<TextureSamplerInfo> textures_;
-	std::vector<KlayGE::shared_ptr<ShaderDecl> > temp_dcls_;
+	std::vector<ShaderDecl> temp_dcls_;
 	std::map<int64_t, bool> cb_index_mode_;
-	std::vector<HSForkPhase> hs_fork_phases_;
 	std::vector<HSControlPointPhase> hs_control_point_phase_;
+	std::vector<HSForkPhase> hs_fork_phases_;
+	std::vector<HSJoinPhase> hs_join_phases_;
 	bool enter_hs_fork_phase_;
 	bool enter_final_hs_fork_phase_;
+	bool enter_hs_join_phase_;
+	bool enter_final_hs_join_phase_;
 
 	// for ifs, the insn number of the else or endif if there is no else
 	// for elses, the insn number of the endif

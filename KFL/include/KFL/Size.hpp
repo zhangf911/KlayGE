@@ -42,9 +42,9 @@
 namespace KlayGE
 {
 	template <typename T>
-	class Size_T : boost::addable<Size_T<T>,
-						boost::subtractable<Size_T<T>,
-						boost::equality_comparable<Size_T<T> > > >
+	class Size_T final : boost::addable<Size_T<T>,
+							boost::subtractable<Size_T<T>,
+							boost::equality_comparable<Size_T<T>>>>
 	{
 		template <typename U>
 		friend class Size_T;
@@ -64,46 +64,55 @@ namespace KlayGE
 		enum { elem_num = 2 };
 
 	public:
-		Size_T()
+		constexpr Size_T() noexcept
 		{
 		}
-		explicit Size_T(T const * rhs);
-		Size_T(Size_T const & rhs)
+		explicit constexpr Size_T(T const * rhs) noexcept
+			: size_(rhs)
+		{
+		}
+		// Leave them in header due to a compiling issue under GCC
+		Size_T(Size_T const & rhs) noexcept
 			: size_(rhs.size_)
 		{
 		}
 		template <typename U>
-		Size_T(Size_T<U> const & rhs)
+		constexpr Size_T(Size_T<U> const & rhs) noexcept
 			: size_(rhs.size_)
 		{
 		}
-		Size_T(T cx, T cy);
+		Size_T(Size_T&& rhs) noexcept;
+		constexpr Size_T(T cx, T cy) noexcept
+			: size_(cx, cy)
+		{
+		}
 
 		// 取向量
-		reference cx()
+		reference cx() noexcept
 		{
 			return size_[0];
 		}
-		const_reference cx() const
+		constexpr const_reference cx() const noexcept
 		{
 			return size_[0];
 		}
-		reference cy()
+		reference cy() noexcept
 		{
 			return size_[1];
 		}
-		const_reference cy() const
+		constexpr const_reference cy() const noexcept
 		{
 			return size_[1];
 		}
 
 		// 赋值操作符
 		template <typename U>
-		Size_T const & operator+=(Size_T<U> const & rhs);
+		Size_T const & operator+=(Size_T<U> const & rhs) noexcept;
 		template <typename U>
-		Size_T const & operator-=(Size_T<U> const & rhs);
+		Size_T const & operator-=(Size_T<U> const & rhs) noexcept;
 
-		Size_T& operator=(Size_T const & rhs)
+		// Leave them in header due to a compiling issue under GCC
+		Size_T& operator=(Size_T const & rhs) noexcept
 		{
 			if (this != &rhs)
 			{
@@ -112,17 +121,18 @@ namespace KlayGE
 			return *this;
 		}
 		template <typename U>
-		Size_T& operator=(Size_T<U> const & rhs)
+		Size_T& operator=(Size_T<U> const & rhs) noexcept
 		{
 			size_ = rhs.size_;
 			return *this;
 		}
+		Size_T& operator=(Size_T&& rhs) noexcept;
 
 		// 一元操作符
-		Size_T<T> const operator+() const;
-		Size_T<T> const operator-() const;
+		Size_T<T> const operator+() const noexcept;
+		Size_T<T> const operator-() const noexcept;
 
-		bool operator==(Size_T<T> const & rhs) const;
+		bool operator==(Size_T<T> const & rhs) const noexcept;
 
 	private:
 		Vector_T<T, elem_num> size_;

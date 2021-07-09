@@ -29,16 +29,18 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/COMPtr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/Context.hpp>
-#include <KlayGE/App3D.hpp>
-#include <KlayGE/Window.hpp>
+
+#include <iterator>
 
 #include <KlayGE/MsgInput/MInput.hpp>
 
-#if ((defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)) \
-	|| (defined KLAYGE_PLATFORM_WINDOWS_RUNTIME) \
-	|| (defined KLAYGE_PLATFORM_ANDROID)
+#if defined KLAYGE_PLATFORM_ANDROID
+#include <android_native_app_glue.h>
+#endif
+
+#if defined(KLAYGE_PLATFORM_WINDOWS_DESKTOP) || defined(KLAYGE_PLATFORM_WINDOWS_STORE) || defined(KLAYGE_PLATFORM_ANDROID)
 namespace KlayGE
 {
 	std::wstring const & MsgInputSensor::Name() const
@@ -53,14 +55,16 @@ namespace KlayGE
 }
 #endif
 
-#if (defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (_WIN32_WINNT >= 0x0601 /*_WIN32_WINNT_WIN7*/)
+#if defined(KLAYGE_PLATFORM_WINDOWS_DESKTOP)
 
-#if (_WIN32_WINNT < 0x0603 /*_WIN32_WINNT_WINBLUE*/)
-	// Magnetometer Accuracy Data Types
-	DEFINE_PROPERTYKEY(SENSOR_DATA_TYPE_MAGNETOMETER_ACCURACY,
-		0X1637D8A2, 0X4248, 0X4275, 0X86, 0X5D, 0X55, 0X8D, 0XE8, 0X4A, 0XED, 0XFD, 22); //[VT_I4]
+#if (_WIN32_WINNT < _WIN32_WINNT_WINBLUE)
+	#if !(defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 100))
+		// Magnetometer Accuracy Data Types
+		DEFINE_PROPERTYKEY(SENSOR_DATA_TYPE_MAGNETOMETER_ACCURACY,
+			0X1637D8A2, 0X4248, 0X4275, 0X86, 0X5D, 0X55, 0X8D, 0XE8, 0X4A, 0XED, 0XFD, 22); //[VT_I4]
+	#endif
 
-	#if (_WIN32_WINNT < 0x0602 /*_WIN32_WINNT_WIN8*/)
+	#if (_WIN32_WINNT == _WIN32_WINNT_WIN7) && !defined(KLAYGE_COMPILER_GCC)
 		// Additional Motion Data Types
 		DEFINE_PROPERTYKEY(SENSOR_DATA_TYPE_ANGULAR_VELOCITY_X_DEGREES_PER_SECOND,
 			0X3F8A69A2, 0X7C5, 0X4E48, 0XA9, 0X65, 0XCD, 0X79, 0X7A, 0XAB, 0X56, 0XD5, 10); //[VT_R8]
@@ -81,6 +85,7 @@ namespace KlayGE
 
 namespace KlayGE
 {
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 	class MsgInputLocationEvents : public ILocationEvents
 	{
 	public:
@@ -148,8 +153,8 @@ namespace KlayGE
 
 		STDMETHODIMP OnStatusChanged(REFIID report_type, LOCATION_REPORT_STATUS new_status)
 		{
-			UNREF_PARAM(report_type);
-			UNREF_PARAM(new_status);
+			KFL_UNUSED(report_type);
+			KFL_UNUSED(new_status);
 
 			return S_OK;
 		}
@@ -160,6 +165,7 @@ namespace KlayGE
 	private:
 		long ref_;
 	};
+#endif
 
 	class MsgInputSensorEvents : public ISensorEvents
 	{
@@ -214,23 +220,23 @@ namespace KlayGE
 
 		STDMETHODIMP OnEvent(ISensor* sensor, REFGUID event_id, IPortableDeviceValues* event_data)
 		{
-			UNREF_PARAM(sensor);
-			UNREF_PARAM(event_id);
-			UNREF_PARAM(event_data);
+			KFL_UNUSED(sensor);
+			KFL_UNUSED(event_id);
+			KFL_UNUSED(event_data);
 
 			return S_OK;
 		}
 
 		STDMETHODIMP OnLeave(REFSENSOR_ID sensor_id)
 		{
-			UNREF_PARAM(sensor_id);
+			KFL_UNUSED(sensor_id);
 
 			return S_OK;
 		}
 
 		STDMETHODIMP OnStateChanged(ISensor* sensor, SensorState state)
 		{
-			UNREF_PARAM(state);
+			KFL_UNUSED(state);
 
 			HRESULT hr = S_OK;
 
@@ -261,12 +267,15 @@ namespace KlayGE
 		{
 			HRESULT hr = S_OK;
 
-			if ((nullptr == data_report) || (nullptr == sensor))
+			if (!input_sensor_->Destroyed())
 			{
-				return E_INVALIDARG;
-			}
+				if ((nullptr == data_report) || (nullptr == sensor))
+				{
+					return E_INVALIDARG;
+				}
 
-			input_sensor_->OnMotionDataUpdated(sensor, data_report);
+				input_sensor_->OnMotionDataUpdated(sensor, data_report);
+			}
 
 			return hr;
 		}
@@ -284,12 +293,15 @@ namespace KlayGE
 		{
 			HRESULT hr = S_OK;
 
-			if ((nullptr == data_report) || (nullptr == sensor))
+			if (!input_sensor_->Destroyed())
 			{
-				return E_INVALIDARG;
-			}
+				if ((nullptr == data_report) || (nullptr == sensor))
+				{
+					return E_INVALIDARG;
+				}
 
-			input_sensor_->OnOrientationDataUpdated(sensor, data_report);
+				input_sensor_->OnOrientationDataUpdated(sensor, data_report);
+			}
 
 			return hr;
 		}
@@ -297,116 +309,94 @@ namespace KlayGE
 
 
 	MsgInputSensor::MsgInputSensor()
+		: destroyed_(false)
 	{
-		HRESULT hr = ::CoInitialize(0);
+		HRESULT hr = ::CoInitializeEx(0, COINIT_APARTMENTTHREADED);
 
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 		if (Context::Instance().Config().location_sensor)
 		{
-			ILocation* location = nullptr;
+			com_ptr<ILocation> location;
 			hr = ::CoCreateInstance(CLSID_Location, nullptr, CLSCTX_INPROC_SERVER,
-				IID_ILocation, reinterpret_cast<void**>(&location));
+				IID_ILocation, location.put_void());
 			if (SUCCEEDED(hr))
 			{
 				IID REPORT_TYPES[] = { IID_ILatLongReport };
-				hr = location->RequestPermissions(nullptr, REPORT_TYPES,
-					sizeof(REPORT_TYPES) / sizeof(REPORT_TYPES[0]), true);
+				hr = location->RequestPermissions(nullptr, REPORT_TYPES, static_cast<ULONG>(std::size(REPORT_TYPES)), true);
 				if (SUCCEEDED(hr))
 				{
-					locator_ = MakeCOMPtr(location);
+					locator_ = location;
 
-					location_event_ = MakeSharedPtr<MsgInputLocationEvents>(this);
-					ILocationEvents* sensor_event;
-					location_event_->QueryInterface(IID_ILocationEvents, reinterpret_cast<void**>(&sensor_event));
-
-					for (DWORD index = 0; index < sizeof(REPORT_TYPES) / sizeof(REPORT_TYPES[0]); ++ index)
+					location_event_.reset(new MsgInputLocationEvents(this), false);
+					auto sensor_event = location_event_.as<ILocationEvents>(IID_ILocationEvents);
+					for (DWORD index = 0; index < std::size(REPORT_TYPES); ++ index)
 					{
-						hr = locator_->RegisterForReport(sensor_event, REPORT_TYPES[index], 1000);
+						hr = locator_->RegisterForReport(sensor_event.get(), REPORT_TYPES[index], 1000);
 					}
-
-					sensor_event->Release();
-				}
-				else
-				{
-					location->Release();
 				}
 			}
 		}
+#endif
 
-		ISensorManager* sensor_mgr = nullptr;
+		com_ptr<ISensorManager> sensor_mgr;
 		hr = ::CoCreateInstance(CLSID_SensorManager, nullptr, CLSCTX_INPROC_SERVER,
-			IID_ISensorManager, reinterpret_cast<void**>(&sensor_mgr));
+			IID_ISensorManager, sensor_mgr.put_void());
 		if (SUCCEEDED(hr))
 		{
-			ISensorCollection* motion_sensor_collection = nullptr;
-			hr = sensor_mgr->GetSensorsByCategory(SENSOR_CATEGORY_MOTION, &motion_sensor_collection);
+			hr = sensor_mgr->GetSensorsByCategory(SENSOR_CATEGORY_MOTION, motion_sensor_collection_.put());
 			if (SUCCEEDED(hr))
 			{
-				motion_sensor_collection_ = MakeCOMPtr(motion_sensor_collection);
-
 				ULONG count = 0;
 				hr = motion_sensor_collection_->GetCount(&count);
 				if (SUCCEEDED(hr))
 				{
-					for (ULONG i = 0; i < count; ++i)
+					for (ULONG i = 0; i < count; ++ i)
 					{
 						ISensor* sensor;
 						hr = motion_sensor_collection_->GetAt(i, &sensor);
 						if (SUCCEEDED(hr))
 						{
-							shared_ptr<MsgInputMotionSensorEvents> motion_event = MakeSharedPtr<MsgInputMotionSensorEvents>(this);
-							ISensorEvents* sensor_event;
-							motion_event->QueryInterface(IID_ISensorEvents, reinterpret_cast<void**>(&sensor_event));
+							com_ptr<ISensorEvents> motion_event(new MsgInputMotionSensorEvents(this), false);
 							motion_sensor_events_.push_back(motion_event);
-
-							sensor->SetEventSink(sensor_event);
-
-							sensor_event->Release();
-							sensor->Release();
+							sensor->SetEventSink(motion_event.get());
 						}
 					}
 				}
 			}
 
-			ISensorCollection* orientation_sensor_collection = nullptr;
-			hr = sensor_mgr->GetSensorsByCategory(SENSOR_CATEGORY_ORIENTATION, &orientation_sensor_collection);
+			hr = sensor_mgr->GetSensorsByCategory(SENSOR_CATEGORY_ORIENTATION, orientation_sensor_collection_.put());
 			if (SUCCEEDED(hr))
 			{
-				orientation_sensor_collection_ = MakeCOMPtr(orientation_sensor_collection);
-
 				ULONG count = 0;
 				hr = orientation_sensor_collection_->GetCount(&count);
 				if (SUCCEEDED(hr))
 				{
-					for (ULONG i = 0; i < count; ++i)
+					for (ULONG i = 0; i < count; ++ i)
 					{
-						ISensor* sensor;
-						hr = orientation_sensor_collection_->GetAt(i, &sensor);
+						com_ptr<ISensor> sensor;
+						hr = orientation_sensor_collection_->GetAt(i, sensor.put());
 						if (SUCCEEDED(hr))
 						{
-							shared_ptr<MsgInputOrientationSensorEvents> orientation_event = MakeSharedPtr<MsgInputOrientationSensorEvents>(this);
-							ISensorEvents* sensor_event;
-							orientation_event->QueryInterface(IID_ISensorEvents, reinterpret_cast<void**>(&sensor_event));
+							com_ptr<ISensorEvents> orientation_event(new MsgInputOrientationSensorEvents(this), false);
 							orientation_sensor_events_.push_back(orientation_event);
 
-							sensor->SetEventSink(sensor_event);
-
-							sensor_event->Release();
-							sensor->Release();
+							sensor->SetEventSink(orientation_event.get());
 						}
 					}
 				}
 			}
-
-			sensor_mgr->Release();
 		}
 	}
 
 	MsgInputSensor::~MsgInputSensor()
 	{
+		destroyed_ = true;
+
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 		if (locator_)
 		{
 			IID REPORT_TYPES[] = { IID_ILatLongReport };
-			for (DWORD index = 0; index < sizeof(REPORT_TYPES) / sizeof(REPORT_TYPES[0]); ++ index)
+			for (DWORD index = 0; index < std::size(REPORT_TYPES); ++ index)
 			{
 				locator_->UnregisterForReport(REPORT_TYPES[index]);
 			}
@@ -414,47 +404,16 @@ namespace KlayGE
 			location_event_.reset();
 			locator_.reset();
 		}
+#endif
 
 		if (motion_sensor_collection_)
 		{
-			ULONG count = 0;
-			HRESULT hr = motion_sensor_collection_->GetCount(&count);
-			if (SUCCEEDED(hr))
-			{
-				for (ULONG i = 0; i < count; ++i)
-				{
-					ISensor* sensor;
-					hr = motion_sensor_collection_->GetAt(i, &sensor);
-					if (SUCCEEDED(hr))
-					{
-						sensor->SetEventSink(nullptr);
-						sensor->Release();
-					}
-				}
-			}
-
 			motion_sensor_events_.clear();
 			motion_sensor_collection_.reset();
 		}
 
 		if (orientation_sensor_collection_)
 		{
-			ULONG count = 0;
-			HRESULT hr = orientation_sensor_collection_->GetCount(&count);
-			if (SUCCEEDED(hr))
-			{
-				for (ULONG i = 0; i < count; ++i)
-				{
-					ISensor* sensor;
-					hr = orientation_sensor_collection_->GetAt(i, &sensor);
-					if (SUCCEEDED(hr))
-					{
-						sensor->SetEventSink(nullptr);
-						sensor->Release();
-					}
-				}
-			}
-
 			orientation_sensor_events_.clear();
 			orientation_sensor_collection_.reset();
 		}
@@ -462,48 +421,43 @@ namespace KlayGE
 		::CoUninitialize();
 	}
 
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 	void MsgInputSensor::OnLocationChanged(REFIID report_type, ILocationReport* location_report)
 	{
 		if (IID_ILatLongReport == report_type)
 		{
-			ILatLongReport* lat_long_report;
-			if (SUCCEEDED(location_report->QueryInterface(IID_ILatLongReport,
-				reinterpret_cast<void**>(&lat_long_report))))
+			if (auto lat_long_report = com_ptr<ILocationReport>(location_report).try_as<ILatLongReport>(IID_ILatLongReport))
 			{
-				if (lat_long_report != nullptr)
+				double lat = 0;
+				double lng = 0;
+				double alt = 0;
+				double err_radius = 0;
+				double alt_err = 0;
+
+				if (SUCCEEDED(lat_long_report->GetLatitude(&lat)))
 				{
-					double lat = 0;
-					double lng = 0;
-					double alt = 0;
-					double err_radius = 0;
-					double alt_err = 0;
-
-					if (SUCCEEDED(lat_long_report->GetLatitude(&lat)))
-					{
-						latitude_ = static_cast<float>(lat);
-					}
-					if (SUCCEEDED(lat_long_report->GetLongitude(&lng)))
-					{
-						longitude_ = static_cast<float>(lng);
-					}
-					if (SUCCEEDED(lat_long_report->GetAltitude(&alt)))
-					{
-						altitude_ = static_cast<float>(alt);
-					}
-					if (SUCCEEDED(lat_long_report->GetErrorRadius(&err_radius)))
-					{
-						location_error_radius_ = static_cast<float>(err_radius);
-					}
-					if (SUCCEEDED(lat_long_report->GetAltitudeError(&alt_err)))
-					{
-						location_altitude_error_ = static_cast<float>(alt_err);
-					}
-
-					lat_long_report->Release();
+					latitude_ = static_cast<float>(lat);
+				}
+				if (SUCCEEDED(lat_long_report->GetLongitude(&lng)))
+				{
+					longitude_ = static_cast<float>(lng);
+				}
+				if (SUCCEEDED(lat_long_report->GetAltitude(&alt)))
+				{
+					altitude_ = static_cast<float>(alt);
+				}
+				if (SUCCEEDED(lat_long_report->GetErrorRadius(&err_radius)))
+				{
+					location_error_radius_ = static_cast<float>(err_radius);
+				}
+				if (SUCCEEDED(lat_long_report->GetAltitudeError(&alt_err)))
+				{
+					location_altitude_error_ = static_cast<float>(alt_err);
 				}
 			}
 		}
 	}
+#endif
 
 	void MsgInputSensor::OnMotionDataUpdated(ISensor* sensor, ISensorDataReport* data_report)
 	{
@@ -738,109 +692,69 @@ namespace KlayGE
 	}
 }
 
-#elif defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
-
-using namespace Windows::Foundation;
-using namespace Windows::Devices::Geolocation;
-using namespace Windows::Devices::Sensors;
+#elif defined KLAYGE_PLATFORM_WINDOWS_STORE
 
 namespace KlayGE
 {
-	ref class MetroMsgInputSensorEvent sealed
-	{
-		friend MsgInputSensor;
-
-	public:
-		MetroMsgInputSensorEvent()
-		{
-		}
-
-	private:
-		void OnPositionChanged(Geolocator^ sender, PositionChangedEventArgs^ e)
-		{
-			input_sensor_->OnPositionChanged(sender, e);
-		}
-
-		void OnAccelerometeReadingChanged(Accelerometer^ sender, AccelerometerReadingChangedEventArgs^ e)
-		{
-			input_sensor_->OnAccelerometeReadingChanged(sender, e);
-		}
-
-		void OnGyrometerReadingChanged(Gyrometer^ sender, GyrometerReadingChangedEventArgs^ e)
-		{
-			input_sensor_->OnGyrometerReadingChanged(sender, e);
-		}
-
-		void OnInclinometerReadingChanged(Inclinometer^ sender, InclinometerReadingChangedEventArgs^ e)
-		{
-			input_sensor_->OnInclinometerReadingChanged(sender, e);
-		}
-
-		void OnCompassReadingChanged(Compass^ sender, CompassReadingChangedEventArgs^ e)
-		{
-			input_sensor_->OnCompassReadingChanged(sender, e);
-		}
-
-		void OnOrientationSensorReadingChanged(OrientationSensor^ sender, OrientationSensorReadingChangedEventArgs^ e)
-		{
-			input_sensor_->OnOrientationSensorReadingChanged(sender, e);
-		}
-
-		void BindSensor(MsgInputSensor* input_sensor)
-		{
-			input_sensor_ = input_sensor;
-		}
-
-	private:
-		MsgInputSensor* input_sensor_;
-	};
-
 	MsgInputSensor::MsgInputSensor()
-		: sensor_event_(ref new MetroMsgInputSensorEvent),
-			accelerometer_(Accelerometer::GetDefault()),
-			gyrometer_(Gyrometer::GetDefault()),
-			inclinometer_(Inclinometer::GetDefault()),
-			compass_(Compass::GetDefault()),
-			orientation_(OrientationSensor::GetDefault())
 	{
-		sensor_event_->BindSensor(this);
-
 		if (Context::Instance().Config().location_sensor)
 		{
-			locator_ = ref new Geolocator;
-			position_token_ = locator_->PositionChanged::add(
-				ref new TypedEventHandler<Geolocator^, PositionChangedEventArgs^>(sensor_event_,
-				&MetroMsgInputSensorEvent::OnPositionChanged));
+			locator_ = uwp::Geolocator();
+			position_token_ = locator_.PositionChanged(
+				winrt::auto_revoke, [this](uwp::Geolocator const& sender, uwp::PositionChangedEventArgs const& args) {
+					return this->OnPositionChanged(sender, args);
+				});
 		}
-		if (accelerometer_)
 		{
-			accelerometer_reading_token_ = accelerometer_->ReadingChanged::add(
-				ref new TypedEventHandler<Accelerometer^, AccelerometerReadingChangedEventArgs^>(sensor_event_,
-					&MetroMsgInputSensorEvent::OnAccelerometeReadingChanged));
+			accelerometer_ = uwp::Accelerometer::GetDefault();
+			if (accelerometer_)
+			{
+				accelerometer_reading_token_ = accelerometer_.ReadingChanged(
+					winrt::auto_revoke, [this](uwp::Accelerometer const& sender, uwp::AccelerometerReadingChangedEventArgs const& args) {
+						return this->OnAccelerometeReadingChanged(sender, args);
+					});
+			}
 		}
-		if (gyrometer_)
 		{
-			gyrometer_reading_token_ = gyrometer_->ReadingChanged::add(
-				ref new TypedEventHandler<Gyrometer^, GyrometerReadingChangedEventArgs^>(sensor_event_,
-					&MetroMsgInputSensorEvent::OnGyrometerReadingChanged));
+			gyrometer_ = uwp::Gyrometer::GetDefault();
+			if (gyrometer_)
+			{
+				gyrometer_reading_token_ = gyrometer_.ReadingChanged(
+					winrt::auto_revoke, [this](uwp::Gyrometer const& sender, uwp::GyrometerReadingChangedEventArgs const& args) {
+						return this->OnGyrometerReadingChanged(sender, args);
+					});
+			}
 		}
-		if (inclinometer_)
 		{
-			inclinometer_reading_token_ = inclinometer_->ReadingChanged::add(
-				ref new TypedEventHandler<Inclinometer^, InclinometerReadingChangedEventArgs^>(sensor_event_,
-					&MetroMsgInputSensorEvent::OnInclinometerReadingChanged));
+			inclinometer_ = uwp::Inclinometer::GetDefault();
+			if (inclinometer_)
+			{
+				inclinometer_reading_token_ = inclinometer_.ReadingChanged(
+					winrt::auto_revoke, [this](uwp::Inclinometer const& sender, uwp::InclinometerReadingChangedEventArgs const& args) {
+						return this->OnInclinometerReadingChanged(sender, args);
+					});
+			}
 		}
-		if (compass_)
 		{
-			compass_reading_token_ = compass_->ReadingChanged::add(
-				ref new TypedEventHandler<Compass^, CompassReadingChangedEventArgs^>(sensor_event_,
-					&MetroMsgInputSensorEvent::OnCompassReadingChanged));
+			compass_ = uwp::Compass::GetDefault();
+			if (compass_)
+			{
+				compass_reading_token_ = compass_.ReadingChanged(
+					winrt::auto_revoke, [this](uwp::Compass const& sender, uwp::CompassReadingChangedEventArgs const& args) {
+						return this->OnCompassReadingChanged(sender, args);
+					});
+			}
 		}
-		if (orientation_)
 		{
-			orientation_reading_token_ = orientation_->ReadingChanged::add(
-				ref new TypedEventHandler<OrientationSensor^, OrientationSensorReadingChangedEventArgs^>(sensor_event_,
-					&MetroMsgInputSensorEvent::OnOrientationSensorReadingChanged));
+			orientation_ = uwp::OrientationSensor::GetDefault();
+			if (orientation_)
+			{
+				orientation_reading_token_ = orientation_.ReadingChanged(winrt::auto_revoke,
+					[this](uwp::OrientationSensor const& sender, uwp::OrientationSensorReadingChangedEventArgs const& args) {
+						return this->OnOrientationSensorReadingChanged(sender, args);
+					});
+			}
 		}
 	}
 
@@ -848,95 +762,137 @@ namespace KlayGE
 	{
 		if (Context::Instance().Config().location_sensor)
 		{
-			locator_->PositionChanged::remove(position_token_);
+			position_token_.revoke();
 		}
 		if (accelerometer_)
 		{
-			accelerometer_->ReadingChanged::remove(accelerometer_reading_token_);
+			accelerometer_reading_token_.revoke();
 		}
 		if (gyrometer_)
 		{
-			gyrometer_->ReadingChanged::remove(gyrometer_reading_token_);
+			gyrometer_reading_token_.revoke();
 		}
 		if (inclinometer_)
 		{
-			inclinometer_->ReadingChanged::remove(inclinometer_reading_token_);
+			inclinometer_reading_token_.revoke();
 		}
 		if (compass_)
 		{
-			compass_->ReadingChanged::remove(compass_reading_token_);
+			compass_reading_token_.revoke();
 		}
 		if (orientation_)
 		{
-			orientation_->ReadingChanged::remove(orientation_reading_token_);
+			orientation_reading_token_.revoke();
 		}
 	}
 
-	void MsgInputSensor::OnPositionChanged(Geolocator^ sender, PositionChangedEventArgs^ e)
+	HRESULT MsgInputSensor::OnPositionChanged(uwp::Geolocator const& sender, uwp::PositionChangedEventArgs const& args)
 	{
-		Geocoordinate^ coordinate = e->Position->Coordinate;
-#if (_WIN32_WINNT >= 0x0603 /*_WIN32_WINNT_WINBLUE*/)
-		latitude_ = static_cast<float>(coordinate->Point->Position.Latitude);
-		longitude_ = static_cast<float>(coordinate->Point->Position.Longitude);
-		altitude_ = static_cast<float>(coordinate->Point->Position.Altitude);
-#else
-		latitude_ = static_cast<float>(coordinate->Latitude);
-		longitude_ = static_cast<float>(coordinate->Longitude);
-		if (coordinate->Altitude)
+		KFL_UNUSED(sender);
+
+		auto const position = args.Position();
+		auto const coordinate = position.Coordinate();
+		
+		auto const coordinate_with_point = coordinate.as<uwp::IGeocoordinateWithPoint>();
+		auto const point = coordinate_with_point.Point();
+		auto const geo_position = point.Position();
+		latitude_ = static_cast<float>(geo_position.Latitude);
+		longitude_ = static_cast<float>(geo_position.Longitude);
+		altitude_ = static_cast<float>(geo_position.Altitude);
+
+		location_error_radius_ = static_cast<float>(coordinate.Accuracy());
+
+		auto rtmp = coordinate.AltitudeAccuracy();
+		if (rtmp)
 		{
-			altitude_ = static_cast<float>(coordinate->Altitude->Value);
+			location_altitude_error_ = static_cast<float>(rtmp.Value());
 		}
-#endif
 
-		location_error_radius_ = static_cast<float>(coordinate->Accuracy);
-		if (coordinate->AltitudeAccuracy)
+		rtmp = coordinate.Speed();
+		if (rtmp)
 		{
-			location_altitude_error_ = static_cast<float>(coordinate->AltitudeAccuracy->Value);
+			speed_ = static_cast<float>(rtmp.Value());
 		}
 
-		if (coordinate->Speed)
+		return S_OK;
+	}
+
+	HRESULT MsgInputSensor::OnAccelerometeReadingChanged(
+		uwp::Accelerometer const& sender, uwp::AccelerometerReadingChangedEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		auto const reading = args.Reading();
+
+		accel_.x() = static_cast<float>(reading.AccelerationX());
+		accel_.y() = static_cast<float>(reading.AccelerationY());
+		accel_.z() = static_cast<float>(reading.AccelerationZ());
+
+		return S_OK;
+	}
+
+	HRESULT MsgInputSensor::OnGyrometerReadingChanged(uwp::Gyrometer const& sender, uwp::GyrometerReadingChangedEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		auto const reading = args.Reading();
+
+		angular_velocity_.x() = static_cast<float>(reading.AngularVelocityX());
+		angular_velocity_.y() = static_cast<float>(reading.AngularVelocityY());
+		angular_velocity_.z() = static_cast<float>(reading.AngularVelocityZ());
+
+		return S_OK;
+	}
+
+	HRESULT MsgInputSensor::OnInclinometerReadingChanged(uwp::Inclinometer const& sender, uwp::InclinometerReadingChangedEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		auto const reading = args.Reading();
+
+		tilt_.x() = reading.PitchDegrees();
+		tilt_.y() = reading.RollDegrees();
+		tilt_.z() = reading.YawDegrees();
+
+		return S_OK;
+	}
+
+	HRESULT MsgInputSensor::OnCompassReadingChanged(uwp::Compass const& sender, uwp::CompassReadingChangedEventArgs const& args)
+	{
+		KFL_UNUSED(sender);
+
+		auto const reading = args.Reading();
+
+		magnetic_heading_north_ = static_cast<float>(reading.HeadingMagneticNorth());
+
+		auto reading_with_accuracy = reading.as<uwp::ICompassReadingHeadingAccuracy>();
+		if (reading_with_accuracy)
 		{
-			speed_ = static_cast<float>(coordinate->Speed->Value);
+			auto const accuracy = reading_with_accuracy.HeadingAccuracy();
+			magnetometer_accuracy_ = static_cast<int32_t>(accuracy);
 		}
+		else
+		{
+			magnetometer_accuracy_ = 0;
+		}
+
+		return S_OK;
 	}
 
-	void MsgInputSensor::OnAccelerometeReadingChanged(Accelerometer^ sender, AccelerometerReadingChangedEventArgs^ e)
+	HRESULT MsgInputSensor::OnOrientationSensorReadingChanged(
+		uwp::OrientationSensor const& sender, uwp::OrientationSensorReadingChangedEventArgs const& args)
 	{
-		AccelerometerReading^ reading = e->Reading;
-		accel_ = float3(static_cast<float>(reading->AccelerationX), static_cast<float>(reading->AccelerationY),
-			static_cast<float>(reading->AccelerationZ));
-	}
+		KFL_UNUSED(sender);
 
-	void MsgInputSensor::OnGyrometerReadingChanged(Gyrometer^ sender, GyrometerReadingChangedEventArgs^ e)
-	{
-		GyrometerReading^ reading = e->Reading;
-		angular_velocity_ = float3(static_cast<float>(reading->AngularVelocityX), static_cast<float>(reading->AngularVelocityY),
-			static_cast<float>(reading->AngularVelocityZ));
-	}
+		auto const reading = args.Reading();
 
-	void MsgInputSensor::OnInclinometerReadingChanged(Inclinometer^ sender, InclinometerReadingChangedEventArgs^ e)
-	{
-		InclinometerReading^ reading = e->Reading;
-		tilt_ = float3(reading->PitchDegrees, reading->RollDegrees, reading->YawDegrees);
-	}
+		auto const quat = reading.Quaternion();
+		orientation_quat_.x() = quat.X();
+		orientation_quat_.y() = quat.Y();
+		orientation_quat_.z() = quat.Z();
+		orientation_quat_.w() = quat.W();
 
-	void MsgInputSensor::OnCompassReadingChanged(Compass^ sender, CompassReadingChangedEventArgs^ e)
-	{
-		CompassReading^ reading = e->Reading;
-		magnetic_heading_north_ = static_cast<float>(reading->HeadingMagneticNorth);
-#if (_WIN32_WINNT >= 0x0603 /*_WIN32_WINNT_WINBLUE*/)
-		magnetometer_accuracy_ = static_cast<int32_t>(reading->HeadingAccuracy);
-#else
-		magnetometer_accuracy_ = 0;
-#endif
-	}
-
-	void MsgInputSensor::OnOrientationSensorReadingChanged(OrientationSensor^ sender,
-		OrientationSensorReadingChangedEventArgs^ e)
-	{
-		OrientationSensorReading^ reading = e->Reading;
-		orientation_quat_ = Quaternion(reading->Quaternion->X, reading->Quaternion->Y,
-			reading->Quaternion->Z, reading->Quaternion->W);
+		return S_OK;
 	}
 }
 
@@ -946,7 +902,11 @@ namespace KlayGE
 {
 	MsgInputSensor::MsgInputSensor()
 	{
+#if __ANDROID_API__ >= 26
+		sensor_mgr_ = ASensorManager_getInstanceForPackage(nullptr);
+#else
 		sensor_mgr_ = ASensorManager_getInstance();
+#endif
 		if (sensor_mgr_)
 		{
 			sensor_event_queue_ = ASensorManager_createEventQueue(sensor_mgr_, ALooper_forThread(),
@@ -988,8 +948,8 @@ namespace KlayGE
 
 	int MsgInputSensor::SensorCallback(int fd, int events, void* data)
 	{
-		UNREF_PARAM(fd);
-		UNREF_PARAM(events);
+		KFL_UNUSED(fd);
+		KFL_UNUSED(events);
 
 		MsgInputSensor* input_sensor = static_cast<MsgInputSensor*>(data);
 

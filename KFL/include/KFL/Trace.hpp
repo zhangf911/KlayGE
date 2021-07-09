@@ -37,21 +37,21 @@
 
 namespace KlayGE
 {
-	class Trace
+	class Trace final
 	{
 	public:
 		Trace(char const * func, int line = 0, char const * file = nullptr)
 			: func_(func), line_(line), file_(file)
 		{
 #ifdef KLAYGE_DEBUG
-			LOG_Info("Enter %s in file %s (line %d)", func_, file_ != nullptr ? file_ : "", line_);
+			LogInfo() << "Enter " << func_ << " in file " << (file_ != nullptr ? file_ : "" ) << " (line " << line_ << ")" << std::endl;
 #endif
 		}
 
 		~Trace()
 		{
 #ifdef KLAYGE_DEBUG
-			LOG_Info("Leave %s in file %s (line %d)", func_, file_ != nullptr ? file_ : "", line_);
+			LogInfo() << "Leave " << func_ << " in file " << (file_ != nullptr ? file_ : "") << " (line " << line_ << ")" << std::endl;
 #endif
 		}
 

@@ -1,61 +1,54 @@
-// D3D11ShaderObject.hpp
-// KlayGE D3D11 shader对象类 头文件
-// Ver 3.8.0
-// 版权所有(C) 龚敏敏, 2009
-// Homepage: http://www.klayge.org
-//
-// 3.8.0
-// 初次建立 (2009.1.30)
-//
-// 修改记录
-/////////////////////////////////////////////////////////////////////////////////
+/**
+ * @file D3D11ShaderObject.hpp
+ * @author Minmin Gong
+ *
+ * @section DESCRIPTION
+ *
+ * This source file is part of KlayGE
+ * For the latest info, see http://www.klayge.org
+ *
+ * @section LICENSE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * You may alternatively use this source under the terms of
+ * the KlayGE Proprietary License (KPL). You can obtained such a license
+ * from http://www.klayge.org/licensing/.
+ */
 
-#ifndef _D3D11SHADEROBJECT_HPP
-#define _D3D11SHADEROBJECT_HPP
+#ifndef KLAYGE_PLUGINS_D3D11_SHADER_OBJECT_HPP
+#define KLAYGE_PLUGINS_D3D11_SHADER_OBJECT_HPP
 
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
 #include <KlayGE/ShaderObject.hpp>
-
-#include <KlayGE/D3D11/D3D11MinGWDefs.hpp>
-#include <D3D11Shader.h>
+#include <KFL/CXX2a/span.hpp>
 
 #include <KlayGE/D3D11/D3D11Typedefs.hpp>
 
+#if KLAYGE_IS_DEV_PLATFORM
+struct ID3D11ShaderReflection;
+#endif
+
 namespace KlayGE
 {
-#ifdef KLAYGE_HAS_STRUCT_PACK
-#pragma pack(push, 2)
-#endif
-	struct D3D11ShaderParameterHandle
-	{
-		uint32_t shader_type;
-
-		D3D_SHADER_VARIABLE_TYPE param_type;
-
-		uint32_t cbuff;
-
-		uint32_t offset;
-		uint32_t elements;
-		uint8_t rows;
-		uint8_t columns;
-	};
-
 	struct D3D11ShaderDesc
 	{
-		D3D11ShaderDesc()
-			: num_samplers(0), num_srvs(0), num_uavs(0)
-		{
-		}
-
 		struct ConstantBufferDesc
 		{
-			ConstantBufferDesc()
-				: size(0)
-			{
-			}
-
 			struct VariableDesc
 			{
 				std::string name;
@@ -69,13 +62,13 @@ namespace KlayGE
 
 			std::string name;
 			size_t name_hash;
-			uint32_t size;
+			uint32_t size = 0;
 		};
 		std::vector<ConstantBufferDesc> cb_desc;
 
-		uint16_t num_samplers;
-		uint16_t num_srvs;
-		uint16_t num_uavs;
+		uint16_t num_samplers = 0;
+		uint16_t num_srvs = 0;
+		uint16_t num_uavs = 0;
 
 		struct BoundResourceDesc
 		{
@@ -86,88 +79,295 @@ namespace KlayGE
 		};
 		std::vector<BoundResourceDesc> res_desc;
 	};
-#ifdef KLAYGE_HAS_STRUCT_PACK
-#pragma pack(pop)
-#endif
 
-	class D3D11ShaderObject : public ShaderObject
+	class D3D11ShaderStageObject : public ShaderStageObject
 	{
 	public:
-		D3D11ShaderObject();
+		explicit D3D11ShaderStageObject(ShaderStage stage);
 
-		std::string GenShaderText(ShaderType type, RenderEffect const & effect,
-			RenderTechnique const & tech, RenderPass const & pass) const;
+		void StreamIn(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids, ResIdentifier& res) override;
+		void StreamOut(std::ostream& os) override;
+		void CompileShader(RenderEffect const& effect, RenderTechnique const& tech, RenderPass const& pass,
+			std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
+		void CreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
 
-		bool AttachNativeShader(ShaderType type, RenderEffect const & effect, std::vector<uint32_t> const & shader_desc_ids,
-			std::vector<uint8_t> const & native_shader_block);
-
-		virtual bool StreamIn(ResIdentifierPtr const & res, ShaderType type, RenderEffect const & effect,
-			std::vector<uint32_t> const & shader_desc_ids) KLAYGE_OVERRIDE;
-		virtual void StreamOut(std::ostream& os, ShaderType type) KLAYGE_OVERRIDE;
-
-		void AttachShader(ShaderType type, RenderEffect const & effect,
-			RenderTechnique const & tech, RenderPass const & pass, std::vector<uint32_t> const & shader_desc_ids);
-		void AttachShader(ShaderType type, RenderEffect const & effect,
-			RenderTechnique const & tech, RenderPass const & pass, ShaderObjectPtr const & shared_so);
-		void LinkShaders(RenderEffect const & effect);
-		ShaderObjectPtr Clone(RenderEffect const & effect);
-
-		void Bind();
-		void Unbind();
-
-		shared_ptr<std::vector<uint8_t> > const & VSCode() const
+		std::vector<uint8_t> const& ShaderCodeBlob() const
 		{
-			return shader_code_[ST_VertexShader].first;
+			return shader_code_;
 		}
 
-		uint32_t VSSignature() const
+		std::string const& ShaderProfile() const
+		{
+			return shader_profile_;
+		}
+
+		D3D11ShaderDesc const& GetD3D11ShaderDesc() const
+		{
+			return shader_desc_;
+		}
+
+		std::vector<uint8_t> const& CBufferIndices() const
+		{
+			return cbuff_indices_;
+		}
+
+		virtual ID3D11VertexShader* HwVertexShader() const
+		{
+			return nullptr;
+		}
+		virtual ID3D11PixelShader* HwPixelShader() const
+		{
+			return nullptr;
+		}
+		virtual ID3D11GeometryShader* HwGeometryShader() const
+		{
+			return nullptr;
+		}
+		virtual ID3D11ComputeShader* HwComputeShader() const
+		{
+			return nullptr;
+		}
+		virtual ID3D11HullShader* HwHullShader() const
+		{
+			return nullptr;
+		}
+		virtual ID3D11DomainShader* HwDomainShader() const
+		{
+			return nullptr;
+		}
+
+	protected:
+		ID3D11GeometryShaderPtr CreateGeometryShaderWithStreamOutput(RenderEffect const& effect,
+			std::array<uint32_t, NumShaderStages> const& shader_desc_ids, std::span<uint8_t const> code_blob,
+			std::vector<ShaderDesc::StreamOutputDecl> const& so_decl);
+
+	private:
+		std::string_view GetShaderProfile(RenderEffect const& effect, uint32_t shader_desc_id) const override;
+		void FillCBufferIndices(RenderEffect const& effect);
+		virtual void ClearHwShader() = 0;
+
+#if KLAYGE_IS_DEV_PLATFORM
+		virtual void StageSpecificReflection(ID3D11ShaderReflection* reflection)
+		{
+			KFL_UNUSED(reflection);
+		}
+#endif
+
+	protected:
+		bool is_available_;
+
+		std::vector<uint8_t> shader_code_;
+		std::string shader_profile_;
+		D3D11ShaderDesc shader_desc_;
+		std::vector<uint8_t> cbuff_indices_;
+	};
+
+	class D3D11VertexShaderStageObject final : public D3D11ShaderStageObject
+	{
+	public:
+		D3D11VertexShaderStageObject();
+
+		ID3D11VertexShader* HwVertexShader() const override
+		{
+			return vertex_shader_.get();
+		}
+		ID3D11GeometryShader* HwGeometryShader() const override
+		{
+			return geometry_shader_.get();
+		}
+
+		uint32_t VsSignature() const
 		{
 			return vs_signature_;
 		}
 
 	private:
-		struct parameter_bind_t
-		{
-			RenderEffectParameterPtr param;
-			D3D11ShaderParameterHandle p_handle;
-			function<void()> func;
-		};
-		typedef std::vector<parameter_bind_t> parameter_binds_t;
+		void ClearHwShader() override;
 
-		parameter_bind_t GetBindFunc(D3D11ShaderParameterHandle const & p_handle, RenderEffectParameterPtr const & param);
-
-		std::string GetShaderProfile(ShaderType type, RenderEffect const & effect, uint32_t shader_desc_id);
-		shared_ptr<std::vector<uint8_t> > CompiteToBytecode(ShaderType type, RenderEffect const & effect,
-			RenderTechnique const & tech, RenderPass const & pass, std::vector<uint32_t> const & shader_desc_ids);
-		void AttachShaderBytecode(ShaderType type, RenderEffect const & effect,
-			std::vector<uint32_t> const & shader_desc_ids, shared_ptr<std::vector<uint8_t> > const & code_blob);
+		void StageSpecificStreamIn(ResIdentifier& res) override;
+		void StageSpecificStreamOut(std::ostream& os) override;
+#if KLAYGE_IS_DEV_PLATFORM
+		void StageSpecificReflection(ID3D11ShaderReflection* reflection) override;
+#endif
+		void StageSpecificCreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
 
 	private:
-		array<parameter_binds_t, ST_NumShaderTypes> param_binds_;
-
 		ID3D11VertexShaderPtr vertex_shader_;
-		ID3D11PixelShaderPtr pixel_shader_;
 		ID3D11GeometryShaderPtr geometry_shader_;
-		ID3D11ComputeShaderPtr compute_shader_;
-		ID3D11HullShaderPtr hull_shader_;
-		ID3D11DomainShaderPtr domain_shader_;
-		array<std::pair<shared_ptr<std::vector<uint8_t> >, std::string>, ST_NumShaderTypes> shader_code_;
-		array<D3D11ShaderDesc, ST_NumShaderTypes> shader_desc_;
-
-		array<std::vector<ID3D11SamplerStatePtr>, ST_NumShaderTypes> samplers_;
-		array<std::vector<tuple<void*, uint32_t, uint32_t> >, ST_NumShaderTypes> srvsrcs_;
-		array<std::vector<ID3D11ShaderResourceViewPtr>, ST_NumShaderTypes> srvs_;
-		array<std::vector<void*>, ST_NumShaderTypes> uavsrcs_;
-		array<std::vector<ID3D11UnorderedAccessViewPtr>, ST_NumShaderTypes> uavs_;
-		array<std::vector<uint8_t>, ST_NumShaderTypes> cbuff_indices_;
-		array<std::vector<ID3D11BufferPtr>, ST_NumShaderTypes> d3d11_cbuffs_;
-
-		std::vector<RenderEffectConstantBufferPtr> all_cbuffs_;
 
 		uint32_t vs_signature_;
 	};
 
-	typedef shared_ptr<D3D11ShaderObject> D3D11ShaderObjectPtr;
+	class D3D11PixelShaderStageObject final : public D3D11ShaderStageObject
+	{
+	public:
+		D3D11PixelShaderStageObject();
+
+		bool HasDiscard() const override
+		{
+			return has_discard_;
+		}
+
+		ID3D11PixelShader* HwPixelShader() const override
+		{
+			return pixel_shader_.get();
+		}
+
+	private:
+		void ClearHwShader() override;
+		void StageSpecificCreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
+
+	private:
+		ID3D11PixelShaderPtr pixel_shader_;
+		bool has_discard_ = true;
+	};
+
+	class D3D11GeometryShaderStageObject final : public D3D11ShaderStageObject
+	{
+	public:
+		D3D11GeometryShaderStageObject();
+
+		ID3D11GeometryShader* HwGeometryShader() const override
+		{
+			return geometry_shader_.get();
+		}
+
+	private:
+		void ClearHwShader() override;
+		void StageSpecificCreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
+
+	private:
+		ID3D11GeometryShaderPtr geometry_shader_;
+	};
+
+	class D3D11ComputeShaderStageObject final : public D3D11ShaderStageObject
+	{
+	public:
+		D3D11ComputeShaderStageObject();
+
+		ID3D11ComputeShader* HwComputeShader() const override
+		{
+			return compute_shader_.get();
+		}
+
+		uint32_t BlockSizeX() const override
+		{
+			return block_size_x_;
+		}
+		uint32_t BlockSizeY() const override
+		{
+			return block_size_y_;
+		}
+		uint32_t BlockSizeZ() const override
+		{
+			return block_size_z_;
+		}
+
+	private:
+		void ClearHwShader() override;
+		void StageSpecificCreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
+
+		void StageSpecificStreamIn(ResIdentifier& res) override;
+		void StageSpecificStreamOut(std::ostream& os) override;
+#if KLAYGE_IS_DEV_PLATFORM
+		void StageSpecificReflection(ID3D11ShaderReflection* reflection) override;
+#endif
+
+	private:
+		ID3D11ComputeShaderPtr compute_shader_;
+
+		uint32_t block_size_x_, block_size_y_, block_size_z_;
+	};
+
+	class D3D11HullShaderStageObject final : public D3D11ShaderStageObject
+	{
+	public:
+		D3D11HullShaderStageObject();
+
+		ID3D11HullShader* HwHullShader() const override
+		{
+			return hull_shader_.get();
+		}
+
+	private:
+		void ClearHwShader() override;
+		void StageSpecificCreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
+
+	private:
+		ID3D11HullShaderPtr hull_shader_;
+	};
+
+	class D3D11DomainShaderStageObject final : public D3D11ShaderStageObject
+	{
+	public:
+		D3D11DomainShaderStageObject();
+
+		ID3D11DomainShader* HwDomainShader() const override
+		{
+			return domain_shader_.get();
+		}
+		ID3D11GeometryShader* HwGeometryShader() const override
+		{
+			return geometry_shader_.get();
+		}
+
+	private:
+		void ClearHwShader() override;
+		void StageSpecificCreateHwShader(
+			RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids) override;
+
+	private:
+		ID3D11DomainShaderPtr domain_shader_;
+		ID3D11GeometryShaderPtr geometry_shader_;
+	};
+
+	class D3D11ShaderObject final : public ShaderObject
+	{
+	public:
+		D3D11ShaderObject();
+
+		ShaderObjectPtr Clone(RenderEffect const & effect) override;
+
+		void Bind(RenderEffect const& effect) override;
+		void Unbind() override;
+
+		std::span<uint8_t const> VsCode() const;
+		uint32_t VsSignature() const;
+
+	private:
+		struct ParameterBind
+		{
+			RenderEffectParameter* param;
+			uint32_t offset;
+			std::function<void()> func;
+		};
+
+	public:
+		explicit D3D11ShaderObject(std::shared_ptr<ShaderObjectTemplate> so_template);
+
+	private:
+		ParameterBind GetBindFunc(ShaderStage stage, uint32_t offset, RenderEffectParameter* param);
+
+		void CreateHwResources(ShaderStage stage, RenderEffect const & effect) override;
+		void DoLinkShaders(RenderEffect const & effect) override;
+
+	private:
+		std::array<std::vector<ParameterBind>, NumShaderStages> param_binds_;
+
+		std::array<std::vector<ID3D11SamplerState*>, NumShaderStages> samplers_;
+		std::array<std::vector<std::tuple<void*, uint32_t, uint32_t>>, NumShaderStages> srvsrcs_;
+		std::array<std::vector<ID3D11ShaderResourceView*>, NumShaderStages> srvs_;
+		std::vector<void*> uavsrcs_;
+		std::vector<ID3D11UnorderedAccessView*> uavs_;
+		std::vector<uint32_t> uav_init_counts_;
+	};
 }
 
-#endif			// _D3D11SHADEROBJECT_HPP
+#endif			// KLAYGE_PLUGINS_D3D11_SHADER_OBJECT_HPP

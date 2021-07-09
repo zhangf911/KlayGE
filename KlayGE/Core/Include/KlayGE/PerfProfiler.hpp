@@ -38,10 +38,11 @@
 
 #include <map>
 #include <string>
+#include <tuple>
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API PerfRange
+	class KLAYGE_CORE_API PerfRange final : boost::noncopyable
 	{
 	public:
 		PerfRange();
@@ -65,7 +66,7 @@ namespace KlayGE
 		bool dirty_;
 	};
 
-	class KLAYGE_CORE_API PerfProfiler
+	class KLAYGE_CORE_API PerfProfiler final : boost::noncopyable
 	{
 	public:
 		PerfProfiler();
@@ -82,10 +83,10 @@ namespace KlayGE
 		void ExportToCSV(std::string const & file_name) const;
 
 	private:
-		static shared_ptr<PerfProfiler> perf_profiler_instance_;
+		static std::unique_ptr<PerfProfiler> perf_profiler_instance_;
 
-		std::vector<tuple<int, std::string, PerfRangePtr,
-			std::vector<tuple<uint32_t, double, double> > > > perf_ranges_;
+		std::vector<std::tuple<int, std::string, PerfRangePtr,
+			std::vector<std::tuple<uint32_t, double, double>>>> perf_ranges_;
 		uint32_t frame_id_;
 	};
 }

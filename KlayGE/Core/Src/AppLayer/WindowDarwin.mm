@@ -10,6 +10,7 @@
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderFactory.hpp>
 
+#import <CoreServices/CoreServices.h>
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/gl.h>
 
@@ -69,15 +70,17 @@ namespace KlayGE
 {
 	static void RegisterApp()
 	{
-		ProcessSerialNumber psn;
 		NSAutoreleasePool* pool;
-		
-		if (!GetCurrentProcess(&psn))
-		{
-			TransformProcessType(&psn, kProcessTransformToForegroundApplication);
-			SetFrontProcess(&psn);
-		}
-		
+		ProcessSerialNumber psn = { 0, kCurrentProcess };
+		TransformProcessType(&psn, kProcessTransformToForegroundApplication);
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_8
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"	// Ignore SetFrontProcess's deprecation
+#endif
+		SetFrontProcess(&psn);
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_8
+#pragma GCC diagnostic pop
+#endif
 		pool = [[NSAutoreleasePool alloc] init];
 		if (nil == NSApp)
 		{
@@ -94,17 +97,28 @@ namespace KlayGE
 		[pool release];
 	}
 
-	Window::Window(std::string const & name, RenderSettings const & settings)
-		: active_(false), ready_(false), closed_(false)
+	Window::Window(std::string const & name, RenderSettings const & settings, void* native_wnd)
+		: active_(false), ready_(false), closed_(false), keep_screen_on_(settings.keep_screen_on),
+			dpi_scale_(1), effective_dpi_scale_(1), win_rotation_(WR_Identity)
 	{
+		KFL_UNUSED(native_wnd);
+
 		RegisterApp();
 
 		NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
 
 		NSScreen* mainDisplay = [NSScreen mainScreen];
 		NSRect initContentRect = NSMakeRect(settings.left, settings.top, settings.width, settings.height);
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_11
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"	// Ignore NSResizableWindowMask's deprecation
+#endif
 		NSUInteger initStyleMask = NSTitledWindowMask | NSMiniaturizableWindowMask | NSClosableWindowMask | NSResizableWindowMask;
-		
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_11
+#pragma GCC diagnostic pop
+#endif
+
 		// TODO: full screen support
 		ns_window_ = [[KlayGEWindow alloc] initWithContentRect:initContentRect
 											 styleMask:initStyleMask
@@ -114,9 +128,6 @@ namespace KlayGE
 
 		[ns_window_ setAcceptsMouseMovedEvents:YES];
 		[ns_window_ setTitle:[NSString stringWithCString:name.c_str() encoding:[NSString defaultCStringEncoding]]];
-
-		ns_window_listener_ = [[KlayGEWindowListener alloc] initWithAppWindow:this];
-		[ns_window_listener_ listen:ns_window_];
 
 		NSRect content_rect = [ns_window_ contentRectForFrameRect:ns_window_.frame];
 		left_ = 0;
@@ -128,18 +139,15 @@ namespace KlayGE
 		[pool release];
 	}
 
-	Window::Window(std::string const & name, RenderSettings const & settings, void* native_wnd)
-		: active_(false), ready_(false), closed_(false)
-	{
-		UNREF_PARAM(name);
-		UNREF_PARAM(settings);
-		UNREF_PARAM(native_wnd);
-		LogWarn("Unimplemented Window::Window");
-	}
-
 	Window::~Window()
 	{
 		[ns_window_listener_ close];
+	}
+
+	void Window::BindListeners()
+	{
+		ns_window_listener_ = [[KlayGEWindowListener alloc] initWithAppWindow:this];
+		[ns_window_listener_ listen:ns_window_];
 	}
 
 	void Window::CreateGLView(RenderSettings const & settings)
@@ -160,6 +168,8 @@ namespace KlayGE
 				break;
 				
 			default:
+				r_size = 0;
+				a_size = 0;
 				BOOST_ASSERT(false);
 				break;
 		}
@@ -185,7 +195,11 @@ namespace KlayGE
 				s_size = 0;
 				break;
 		}
-		
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"	// Ignore OpenGL's deprecation
+#endif
 		std::vector<NSOpenGLPixelFormatAttribute> visual_attr;
 		visual_attr.push_back(NSOpenGLPFAColorSize);
 		visual_attr.push_back(r_size * 3);
@@ -210,16 +224,22 @@ namespace KlayGE
 			visual_attr.push_back(settings.sample_count);
 		}
 		visual_attr.push_back(NSOpenGLPFAOpenGLProfile);
-		visual_attr.push_back(NSOpenGLProfileVersion3_2Core);
+		visual_attr.push_back(NSOpenGLProfileVersion4_1Core);
 		visual_attr.push_back(0);
-		
+
 		NSOpenGLPixelFormat* pixel_format = [[NSOpenGLPixelFormat alloc] initWithAttributes:&visual_attr[0]];
 		ns_view_ = [[NSOpenGLView alloc] initWithFrame:NSMakeRect(0, 0, width_, height_) pixelFormat:pixel_format];
 		[pixel_format release];
-		
+
 		[ns_window_ setContentView:ns_view_];
 		[ns_window_ makeKeyAndOrderFront:nil];
-		
+
+		[[(NSOpenGLView*)ns_view_ openGLContext] makeCurrentContext];	// Create GL Context
+		[[(NSOpenGLView*)ns_view_ openGLContext] setView:ns_view_];		// initilize fbo 0
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14
+#pragma GCC diagnostic pop
+#endif
+
 		[pool release];
 	}
 
@@ -239,7 +259,14 @@ namespace KlayGE
 		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 		for (;;)
 		{
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_11
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"	// Ignore NSAnyEventMask's deprecation
+#endif
 			NSEvent *event = [NSApp nextEventMatchingMask:NSAnyEventMask untilDate:nil inMode:NSDefaultRunLoopMode dequeue:YES];
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_11
+#pragma GCC diagnostic pop
+#endif
 			if (nil == event)
 			{
 				break;
@@ -252,10 +279,17 @@ namespace KlayGE
 	
 	void Window::FlushBuffer()
 	{
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"	// Ignore OpenGL's deprecation
+#endif
 		[[(NSOpenGLView*)ns_view_ openGLContext]flushBuffer];
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14
+#pragma GCC diagnostic pop
+#endif
 	}
 
-	uint2 Window::GetNSViewSize()
+	uint2 Window::GetNSViewSize() const
 	{
 		NSRect rect = ns_view_.frame;
 		return KlayGE::uint2(rect.size.width, rect.size.height);
@@ -298,10 +332,17 @@ namespace KlayGE
 	
 	[view setNextResponder:self];
 	
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_12
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"	// Ignore setAcceptsTouchEvents's deprecation
+#endif
 	if ([view respondsToSelector:@selector(setAcceptsTouchEvents:)])
 	{
 		[view setAcceptsTouchEvents:YES];
 	}
+#if MAC_OS_X_VERSION_MIN_REQUIRED > MAC_OS_X_VERSION_10_12
+#pragma GCC diagnostic pop
+#endif
 }
 
 - (void)close
@@ -333,7 +374,7 @@ namespace KlayGE
 
 - (BOOL)windowShouldClose:(id) sender
 {
-	UNREF_PARAM(sender);
+	KFL_UNUSED(sender);
 	app_window->OnClose()(*app_window);
 	app_window->Active(false);
 	app_window->Ready(false);
@@ -343,7 +384,7 @@ namespace KlayGE
 
 - (void)windowDidResize:(NSNotification*) aNotification
 {
-	UNREF_PARAM(aNotification);
+	KFL_UNUSED(aNotification);
 	app_window->Active(true);
 	app_window->Ready(true);
 	app_window->OnSize()(*app_window, true);
@@ -351,7 +392,7 @@ namespace KlayGE
 
 - (void)windowDidBecomeKey:(NSNotification*) aNotification
 {
-	UNREF_PARAM(aNotification);
+	KFL_UNUSED(aNotification);
 	app_window->Active(true);
 	app_window->Ready(true);
 	app_window->OnSize()(*app_window, true);
@@ -359,7 +400,7 @@ namespace KlayGE
 
 - (void)windowDidResignKey:(NSNotification*) aNotification
 {
-	UNREF_PARAM(aNotification);
+	KFL_UNUSED(aNotification);
 	app_window->Active(false);
 	app_window->OnActive()(*app_window, false);
 }

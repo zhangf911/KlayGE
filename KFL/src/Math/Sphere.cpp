@@ -36,60 +36,49 @@
 
 namespace KlayGE
 {
-	template Sphere_T<float>::Sphere_T(float3 const & center, float radius);
-	template Sphere& Sphere_T<float>::operator+=(float3 const & rhs);
-	template Sphere& Sphere_T<float>::operator-=(float3 const & rhs);
-	template Sphere& Sphere_T<float>::operator*=(float rhs);
-	template Sphere& Sphere_T<float>::operator/=(float rhs);
-	template Sphere& Sphere_T<float>::operator=(Sphere const & rhs);
-	template Sphere const & Sphere_T<float>::operator+() const;
-	template Sphere const & Sphere_T<float>::operator-() const;
-	template bool Sphere_T<float>::IsEmpty() const;
-	template bool Sphere_T<float>::VecInBound(float3 const & v) const;
-	template float Sphere_T<float>::MaxRadiusSq() const;
-	template bool Sphere_T<float>::Intersect(AABBox const & aabb) const;
-	template bool Sphere_T<float>::Intersect(OBBox const & obb) const;
-	template bool Sphere_T<float>::Intersect(Sphere const & sphere) const;
-	template bool Sphere_T<float>::Intersect(Frustum const & frustum) const;
-	template bool Sphere_T<float>::operator==(Sphere const & rhs) const;
-
-
 	template <typename T>
-	Sphere_T<T>::Sphere_T(Vector_T<T, 3> const & center, T radius)
-		: center_(center),
-			radius_(radius)
+	Sphere_T<T>::Sphere_T(Sphere_T<T> const & rhs) noexcept
+		: center_(rhs.center_),
+			radius_(rhs.radius_)
 	{
 	}
 
 	template <typename T>
-	Sphere_T<T>& Sphere_T<T>::operator+=(Vector_T<T, 3> const & rhs)
+	Sphere_T<T>::Sphere_T(Sphere_T<T>&& rhs) noexcept
+		: center_(std::move(rhs.center_)),
+			radius_(std::move(rhs.radius_))
+	{
+	}
+
+	template <typename T>
+	Sphere_T<T>& Sphere_T<T>::operator+=(Vector_T<T, 3> const & rhs) noexcept
 	{
 		this->Center() += rhs;
 		return *this;
 	}
 
 	template <typename T>
-	Sphere_T<T>& Sphere_T<T>::operator-=(Vector_T<T, 3> const & rhs)
+	Sphere_T<T>& Sphere_T<T>::operator-=(Vector_T<T, 3> const & rhs) noexcept
 	{
 		this->Center() -= rhs;
 		return *this;
 	}
 
 	template <typename T>
-	Sphere_T<T>& Sphere_T<T>::operator*=(T rhs)
+	Sphere_T<T>& Sphere_T<T>::operator*=(T rhs) noexcept
 	{
 		this->Radius() *= rhs;
 		return *this;
 	}
 
 	template <typename T>
-	Sphere_T<T>& Sphere_T<T>::operator/=(T rhs)
+	Sphere_T<T>& Sphere_T<T>::operator/=(T rhs) noexcept
 	{
 		return this->operator*=(1.0f / rhs);
 	}
 
 	template <typename T>
-	Sphere_T<T>& Sphere_T<T>::operator=(Sphere_T const & rhs)
+	Sphere_T<T>& Sphere_T<T>::operator=(Sphere_T const & rhs) noexcept
 	{
 		if (this != &rhs)
 		{
@@ -100,62 +89,73 @@ namespace KlayGE
 	}
 
 	template <typename T>
-	Sphere_T<T> const & Sphere_T<T>::operator+() const
+	Sphere_T<T>& Sphere_T<T>::operator=(Sphere_T&& rhs) noexcept
+	{
+		center_ = std::move(rhs.center_);
+		radius_ = std::move(rhs.radius_);
+		return *this;
+	}
+
+	template <typename T>
+	Sphere_T<T> const & Sphere_T<T>::operator+() const noexcept
 	{
 		return *this;
 	}
 
 	template <typename T>
-	Sphere_T<T> const & Sphere_T<T>::operator-() const
+	Sphere_T<T> const & Sphere_T<T>::operator-() const noexcept
 	{
 		return *this;
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::IsEmpty() const
+	bool Sphere_T<T>::IsEmpty() const noexcept
 	{
 		return MathLib::equal(radius_, 0.0f);
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::VecInBound(Vector_T<T, 3> const & v) const
+	bool Sphere_T<T>::VecInBound(Vector_T<T, 3> const & v) const noexcept
 	{
 		return MathLib::intersect_point_sphere(v, *this);
 	}
 
 	template <typename T>
-	T Sphere_T<T>::MaxRadiusSq() const
+	T Sphere_T<T>::MaxRadiusSq() const noexcept
 	{
 		return this->Radius() * this->Radius();
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::Intersect(AABBox_T<T> const & aabb) const
+	bool Sphere_T<T>::Intersect(AABBox_T<T> const & aabb) const noexcept
 	{
 		return aabb.Intersect(*this);
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::Intersect(OBBox_T<T> const & obb) const
+	bool Sphere_T<T>::Intersect(OBBox_T<T> const & obb) const noexcept
 	{
 		return obb.Intersect(*this);
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::Intersect(Sphere_T<T> const & sphere) const
+	bool Sphere_T<T>::Intersect(Sphere_T<T> const & sphere) const noexcept
 	{
 		return MathLib::intersect_sphere_sphere(*this, sphere);
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::Intersect(Frustum_T<T> const & frustum) const
+	bool Sphere_T<T>::Intersect(Frustum_T<T> const & frustum) const noexcept
 	{
-		return MathLib::intersect_sphere_frustum(*this, frustum) != BO_No;
+		return MathLib::intersect_sphere_frustum(*this, frustum) != BoundOverlap::No;
 	}
 
 	template <typename T>
-	bool Sphere_T<T>::operator==(Sphere_T<T> const & rhs) const
+	bool Sphere_T<T>::operator==(Sphere_T<T> const & rhs) const noexcept
 	{
 		return (center_ == rhs.center_) && (radius_ == rhs.radius_);
 	}
+
+
+	template class Sphere_T<float>;
 }

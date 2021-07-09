@@ -14,10 +14,9 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Math.hpp>
 #include <KFL/Util.hpp>
-#include <KlayGE/App3D.hpp>
-#include <KlayGE/Window.hpp>
 #include <KlayGE/Font.hpp>
 #include <KlayGE/Renderable.hpp>
 #include <KlayGE/RenderableHelper.hpp>
@@ -28,23 +27,37 @@
 #include <KlayGE/InputFactory.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/ResLoader.hpp>
-#include <KlayGE/SceneObjectHelper.hpp>
+#include <KlayGE/SceneManager.hpp>
+#include <KlayGE/SceneNode.hpp>
 #include <KFL/XMLDom.hpp>
 #include <KlayGE/Font.hpp>
-#include <KFL/Thread.hpp>
-
-#ifdef Bool
-#undef Bool		// for boost::foreach
-#endif
+#include <KlayGE/TransientBuffer.hpp>
+#include <KFL/Hash.hpp>
+#include <KlayGE/App3D.hpp>
+#include <KlayGE/Window.hpp>
 
 #include <cstring>
 #include <fstream>
+#include <iterator>
+#include <mutex>
 
 #include <KlayGE/UI.hpp>
 
 namespace
 {
-	KlayGE::mutex singleton_mutex;
+	std::mutex singleton_mutex;
+
+	bool BoolFromStr(std::string_view name)
+	{
+		if (("true" == name) || ("1" == name))
+		{
+			return true;
+		}
+		else
+		{
+			return false;
+		}
+	}
 
 	bool ReadBool(KlayGE::XMLNodePtr& node, std::string const & name, bool default_val)
 	{
@@ -53,16 +66,7 @@ namespace
 		KlayGE::XMLAttributePtr attr = node->Attrib(name);
 		if (attr)
 		{
-			std::string val_str = attr->ValueString();
-			if (("true" == val_str) || ("1" == val_str))
-			{
-				ret = true;
-			}
-			else
-			{
-				BOOST_ASSERT(("false" == val_str) || ("0" == val_str));
-				ret = false;
-			}
+			ret = BoolFromStr(attr->ValueString());
 		}
 
 		return ret;
@@ -80,38 +84,40 @@ namespace
 
 namespace KlayGE
 {
-	UIManagerPtr UIManager::ui_mgr_instance_;
+	std::unique_ptr<UIManager> UIManager::ui_mgr_instance_;
 
 
-	class UIRectRenderable : public RenderableHelper
+	class UIRectRenderable : public Renderable
 	{
 	public:
 		UIRectRenderable(TexturePtr const & texture, RenderEffectPtr const & effect)
-			: RenderableHelper(L"UIRect"),
-				dirty_(false), texture_(texture)
+			: Renderable(L"UIRect"),
+				texture_(texture)
 		{
 			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
 			restart_ = rf.RenderEngineInstance().DeviceCaps().primitive_restart_support;
 
-			rl_ = rf.MakeRenderLayout();
+			rls_[0] = rf.MakeRenderLayout();
 			if (restart_)
 			{
-				rl_->TopologyType(RenderLayout::TT_TriangleStrip);
+				rls_[0]->TopologyType(RenderLayout::TT_TriangleStrip);
 			}
 			else
 			{
-				rl_->TopologyType(RenderLayout::TT_TriangleList);
+				rls_[0]->TopologyType(RenderLayout::TT_TriangleList);
 			}
 
-			vb_ = rf.MakeVertexBuffer(BU_Dynamic, EAH_CPU_Write | EAH_GPU_Read, nullptr);
-			rl_->BindVertexStream(vb_, make_tuple(vertex_element(VEU_Position, 0, EF_BGR32F),
-												vertex_element(VEU_Diffuse, 0, EF_ABGR32F),
-												vertex_element(VEU_TextureCoord, 0, EF_GR32F)));
+			uint32_t const INDEX_PER_QUAD = restart_ ? 5 : 6;
+			uint32_t const INIT_NUM_QUAD = 1024;
+			tb_vb_ = MakeUniquePtr<TransientBuffer>(static_cast<uint32_t>(INIT_NUM_QUAD * 4 * sizeof(UIManager::VertexFormat)), TransientBuffer::BF_Vertex);
+			tb_ib_ = MakeUniquePtr<TransientBuffer>(static_cast<uint32_t>(INIT_NUM_QUAD * INDEX_PER_QUAD * sizeof(uint16_t)), TransientBuffer::BF_Index);
 
-			ib_ = rf.MakeIndexBuffer(BU_Dynamic, EAH_CPU_Write | EAH_GPU_Read, nullptr);
-			rl_->BindIndexStream(ib_, EF_R16UI);
+			rls_[0]->BindVertexStream(tb_vb_->GetBuffer(), MakeSpan({VertexElement(VEU_Position, 0, EF_BGR32F),
+				VertexElement(VEU_Diffuse, 0, EF_ABGR32F), VertexElement(VEU_TextureCoord, 0, EF_GR32F)}));
+			rls_[0]->BindIndexStream(tb_ib_->GetBuffer(), EF_R16UI);
 
+			effect_ = effect;
 			if (texture)
 			{
 				technique_ = effect->TechniqueByName("UITec");
@@ -121,59 +127,14 @@ namespace KlayGE
 				technique_ = effect->TechniqueByName("UITecNoTex");
 			}
 
-			ui_tex_ep_ = technique_->Effect().ParameterByName("ui_tex");
-			half_width_height_ep_ = technique_->Effect().ParameterByName("half_width_height");
-		}
-
-		void Clear()
-		{
-			vertices_.resize(0);
-			indices_.resize(0);
+			ui_tex_ep_ = effect->ParameterByName("ui_tex");
+			half_width_height_ep_ = effect->ParameterByName("half_width_height");
+			dpi_scale_ep_ = effect->ParameterByName("dpi_scale");
 		}
 
 		bool Empty() const
 		{
-			return indices_.empty();
-		}
-
-		std::vector<UIManager::VertexFormat>& Vertices()
-		{
-			dirty_ = true;
-			return vertices_;
-		}
-
-		std::vector<uint16_t>& Indices()
-		{
-			dirty_ = true;
-			return indices_;
-		}
-
-		bool PriRestart() const
-		{
-			return restart_;
-		}
-
-		void UpdateBuffers()
-		{
-			if (dirty_)
-			{
-				if (!vertices_.empty() || !indices_.empty())
-				{
-					vb_->Resize(static_cast<uint32_t>(vertices_.size() * sizeof(vertices_[0])));
-					{
-						GraphicsBuffer::Mapper mapper(*vb_, BA_Write_Only);
-						std::memcpy(mapper.Pointer<uint8_t>(), &vertices_[0], vb_->Size());
-					}
-
-					ib_->Resize(static_cast<uint32_t>(indices_.size() * sizeof(indices_[0])));
-					{
-						GraphicsBuffer::Mapper mapper(*ib_, BA_Write_Only);
-						std::memcpy(mapper.Pointer<uint8_t>(), &indices_[0], ib_->Size());
-					}
-				}
-
-				dirty_ = false;
-			}
+			return tb_ib_sub_allocs_.empty();
 		}
 
 		void OnRenderBegin()
@@ -187,46 +148,103 @@ namespace KlayGE
 			float const half_height = re.CurFrameBuffer()->Height() / 2.0f;
 
 			*half_width_height_ep_ = float2(half_width, half_height);
+			*dpi_scale_ep_ = Context::Instance().AppInstance().MainWnd()->DPIScale();
+
+			tb_vb_->EnsureDataReady();
+			tb_ib_->EnsureDataReady();
+
+			rls_[0]->SetVertexStream(0, tb_vb_->GetBuffer());
+			rls_[0]->BindIndexStream(tb_ib_->GetBuffer(), EF_R16UI);
+		}
+		
+		void OnRenderEnd()
+		{
+			tb_vb_->OnPresent();
+			tb_ib_->OnPresent();
+
+			tb_vb_sub_allocs_.clear();
+			tb_ib_sub_allocs_.clear();
 		}
 
 		void Render()
 		{
-			RenderEngine& renderEngine(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+			RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
 
 			this->OnRenderBegin();
-			renderEngine.Render(*this->GetRenderTechnique(), *rl_);
+
+			BOOST_ASSERT(tb_vb_sub_allocs_.size() == tb_ib_sub_allocs_.size());
+
+			for (size_t i = 0; i < tb_vb_sub_allocs_.size(); ++ i)
+			{
+				uint32_t vert_length = tb_vb_sub_allocs_[i].length_;
+				uint32_t const ind_offset = tb_ib_sub_allocs_[i].offset_;
+				uint32_t ind_length = tb_ib_sub_allocs_[i].length_;
+
+				while ((i + 1 < tb_vb_sub_allocs_.size())
+					&& (tb_vb_sub_allocs_[i].offset_ + tb_vb_sub_allocs_[i].length_ == tb_vb_sub_allocs_[i + 1].offset_)
+					&& (tb_ib_sub_allocs_[i].offset_ + tb_ib_sub_allocs_[i].length_ == tb_ib_sub_allocs_[i + 1].offset_))
+				{
+					vert_length += tb_vb_sub_allocs_[i + 1].length_;
+					ind_length += tb_ib_sub_allocs_[i + 1].length_;
+					++ i;
+				}
+
+				rls_[0]->NumVertices(vert_length / sizeof(UIManager::VertexFormat));
+				rls_[0]->StartIndexLocation(ind_offset / sizeof(uint16_t));
+				rls_[0]->NumIndices(ind_length / sizeof(uint16_t));
+
+				re.Render(*this->GetRenderEffect(), *this->GetRenderTechnique(), *rls_[0]);
+			}
+
+			for (size_t i = 0; i < tb_vb_sub_allocs_.size(); ++ i)
+			{
+				tb_vb_->Dealloc(tb_vb_sub_allocs_[i]);
+				tb_ib_->Dealloc(tb_ib_sub_allocs_[i]);
+			}
+
 			this->OnRenderEnd();
+		}
+
+		void AddQuad(std::vector<UIManager::VertexFormat> const & vertices)
+		{
+			tb_vb_sub_allocs_.push_back(tb_vb_->Alloc(static_cast<uint32_t>(vertices.size() * sizeof(vertices[0])), &vertices[0]));
+			
+			uint16_t const last_index = static_cast<uint16_t>(tb_vb_sub_allocs_.back().offset_ / sizeof(UIManager::VertexFormat));
+			std::vector<uint16_t> indices;
+			indices.resize(restart_ ? 5 : 6);
+			indices[0] = last_index + 0;
+			indices[1] = last_index + 1;
+			if (restart_)
+			{
+				indices[2] = last_index + 3;
+				indices[3] = last_index + 2;
+				indices[4] = 0xFFFF;
+			}
+			else
+			{
+				indices[2] = last_index + 2;
+				indices[3] = last_index + 2;
+				indices[4] = last_index + 3;
+				indices[5] = last_index + 0;
+			}
+			BOOST_ASSERT(last_index + 3 <= 0xFFFF);
+
+			tb_ib_sub_allocs_.push_back(tb_ib_->Alloc(static_cast<uint32_t>(indices.size() * sizeof(indices[0])), &indices[0]));
 		}
 
 	private:
 		bool restart_;
-		bool dirty_;
 
-		RenderEffectParameterPtr ui_tex_ep_;
-		RenderEffectParameterPtr half_width_height_ep_;
+		RenderEffectParameter* dpi_scale_ep_;
+		RenderEffectParameter* ui_tex_ep_;
+		RenderEffectParameter* half_width_height_ep_;
 
 		TexturePtr texture_;
 
-		std::vector<UIManager::VertexFormat> vertices_;
-		std::vector<uint16_t> indices_;
-
-		GraphicsBufferPtr vb_;
-		GraphicsBufferPtr ib_;
-	};
-
-	class UIRectObject : public SceneObjectHelper
-	{
-	public:
-		UIRectObject(RenderablePtr const & renderable, uint32_t attrib)
-			: SceneObjectHelper(renderable, attrib)
-		{
-		}
-
-		virtual bool MainThreadUpdate(float /*app_time*/, float /*elapsed_time*/) KLAYGE_OVERRIDE
-		{
-			checked_pointer_cast<UIRectRenderable>(renderable_)->UpdateBuffers();
-			return false;
-		}
+		std::unique_ptr<TransientBuffer> tb_vb_;
+		std::unique_ptr<TransientBuffer> tb_ib_;
+		std::vector<SubAlloc> tb_vb_sub_allocs_;
+		std::vector<SubAlloc> tb_ib_sub_allocs_;
 	};
 
 
@@ -281,24 +299,17 @@ namespace KlayGE
 	}
 
 
-	UIManager::UIManager()
-		: mouse_on_ui_(false),
-			inited_(false)
-	{
-	}
-
-	UIManager::~UIManager()
-	{
-	}
+	UIManager::UIManager() = default;
+	UIManager::~UIManager() noexcept = default;
 	
 	UIManager& UIManager::Instance()
 	{
 		if (!ui_mgr_instance_)
 		{
-			unique_lock<mutex> lock(singleton_mutex);
+			std::lock_guard<std::mutex> lock(singleton_mutex);
 			if (!ui_mgr_instance_)
 			{
-				ui_mgr_instance_ = MakeSharedPtr<UIManager>();
+				ui_mgr_instance_ = MakeUniquePtr<UIManager>();
 			}
 		}
 
@@ -381,376 +392,365 @@ namespace KlayGE
 
 		InputEngine& inputEngine(Context::Instance().InputFactoryInstance().InputEngineInstance());
 		InputActionMap actionMap;
-		actionMap.AddActions(&actions[0], &actions[sizeof(actions) / sizeof(actions[0])]);
+		actionMap.AddActions(actions, actions + std::size(actions));
 
 		action_handler_t input_handler = MakeSharedPtr<input_signal>();
-		input_handler->connect(KlayGE::bind(&UIManager::InputHandler, this, KlayGE::placeholders::_1, KlayGE::placeholders::_2));
+		input_handler->Connect(
+			[this](InputEngine const & sender, InputAction const & action)
+			{
+				this->InputHandler(sender, action);
+			});
 		inputEngine.ActionMap(actionMap, input_handler);
 	}
 
-	void UIManager::Load(ResIdentifierPtr const & source)
+	void UIManager::Load(ResIdentifier& source)
 	{
-		if (source)
+		if (!inited_)
 		{
-			if (!inited_)
+			this->Init();
+			inited_ = true;
+		}
+
+		XMLDocument doc;
+		XMLNodePtr root = doc.Parse(source);
+
+		XMLAttributePtr attr;
+
+		std::vector<std::unique_ptr<XMLDocument>> include_docs;
+		for (XMLNodePtr node = root->FirstNode("include"); node;)
+		{
+			attr = node->Attrib("name");
+			include_docs.push_back(MakeUniquePtr<XMLDocument>());
+			XMLNodePtr include_root = include_docs.back()->Parse(*ResLoader::Instance().Open(std::string(attr->ValueString())));
+
+			for (XMLNodePtr child_node = include_root->FirstNode(); child_node; child_node = child_node->NextSibling())
 			{
-				this->Init();
-				inited_ = true;
+				if (XNT_Element == child_node->Type())
+				{
+					root->InsertNode(*node, doc.CloneNode(*child_node));
+				}
 			}
 
-			XMLDocument doc;
-			XMLNodePtr root = doc.Parse(source);
+			XMLNodePtr node_next = node->NextSibling("include");
+			root->RemoveNode(*node);
+			node = node_next;
+		}
 
-			XMLAttributePtr attr;
-
-			std::vector<XMLDocumentPtr> include_docs;
-			for (XMLNodePtr node = root->FirstNode("include"); node;)
+		for (XMLNodePtr node = root->FirstNode("dialog"); node; node = node->NextSibling("dialog"))
+		{
+			UIDialogPtr dlg;
 			{
-				attr = node->Attrib("name");
-				include_docs.push_back(MakeSharedPtr<XMLDocument>());
-				XMLNodePtr include_root = include_docs.back()->Parse(ResLoader::Instance().Open(attr->ValueString()));
-
-				for (XMLNodePtr child_node = include_root->FirstNode(); child_node; child_node = child_node->NextSibling())
+				int32_t x, y;
+				uint32_t width, height;
+				UIDialog::ControlAlignment align_x = UIDialog::CA_Left, align_y = UIDialog::CA_Top;
+				std::string_view const id = node->AttribString("id", "");
+				std::string_view const caption = node->AttribString("caption", "");
+				std::string_view const skin = node->AttribString("skin", "");
+				x = node->Attrib("x")->ValueInt();
+				y = node->Attrib("y")->ValueInt();
+				width = node->Attrib("width")->ValueInt();
+				height = node->Attrib("height")->ValueInt();
+				attr = node->Attrib("align_x");
+				if (attr)
 				{
-					if (XNT_Element == child_node->Type())
+					std::string_view const align_x_str = attr->ValueString();
+					if ("left" == align_x_str)
 					{
-						root->InsertNode(node, doc.CloneNode(child_node));
+						align_x = UIDialog::CA_Left;
+					}
+					else if ("right" == align_x_str)
+					{
+						align_x = UIDialog::CA_Right;
+					}
+					else
+					{
+						BOOST_ASSERT("center" == align_x_str);
+						align_x = UIDialog::CA_Center;
+					}
+				}
+				attr = node->Attrib("align_y");
+				if (attr)
+				{
+					std::string_view const align_y_str = attr->ValueString();
+					if ("top" == align_y_str)
+					{
+						align_y = UIDialog::CA_Top;
+					}
+					else if ("bottom" == align_y_str)
+					{
+						align_y = UIDialog::CA_Bottom;
+					}
+					else
+					{
+						BOOST_ASSERT("middle" == align_y_str);
+						align_y = UIDialog::CA_Middle;
 					}
 				}
 
-				XMLNodePtr node_next = node->NextSibling("include");
-				root->RemoveNode(node);
-				node = node_next;
+				TexturePtr tex;
+				if (!skin.empty())
+				{
+					tex = SyncLoadTexture(std::string(skin), EAH_GPU_Read | EAH_Immutable);
+				}
+				dlg = this->MakeDialog(tex);
+				dlg->SetID(std::string(id));
+				std::wstring wcaption;
+				Convert(wcaption, caption);
+				dlg->SetCaptionText(wcaption);
+
+				dlg->EnableCaption(ReadBool(node, "show_caption", true));
+				dlg->AlwaysInOpacity(ReadBool(node, "opacity", false));
+
+				Color bg_clr(0.4f, 0.6f, 0.8f, 1);
+				attr = node->Attrib("bg_color_r");
+				if (attr)
+				{
+					bg_clr.r() = attr->ValueFloat();
+				}
+				attr = node->Attrib("bg_color_g");
+				if (attr)
+				{
+					bg_clr.g() = attr->ValueFloat();
+				}
+				attr = node->Attrib("bg_color_b");
+				if (attr)
+				{
+					bg_clr.b() = attr->ValueFloat();
+				}
+				attr = node->Attrib("bg_color_a");
+				if (attr)
+				{
+					bg_clr.a() = attr->ValueFloat();
+				}
+				dlg->SetBackgroundColors(bg_clr);
+
+				UIDialog::ControlLocation loc = { x, y, align_x, align_y };
+				dlg->CtrlLocation(-1, loc);
+				dlg->SetSize(width, height);
 			}
 
-			for (XMLNodePtr node = root->FirstNode("dialog"); node; node = node->NextSibling("dialog"))
+			std::vector<std::string_view> ctrl_ids;
+			for (XMLNodePtr ctrl_node = node->FirstNode("control"); ctrl_node; ctrl_node = ctrl_node->NextSibling("control"))
 			{
-				UIDialogPtr dlg;
-				{
-					int32_t x, y;
-					uint32_t width, height;
-					UIDialog::ControlAlignment align_x = UIDialog::CA_Left, align_y = UIDialog::CA_Top;
-					std::string id = node->AttribString("id", "");
-					std::string caption = node->AttribString("caption", "");
-					std::string skin = node->AttribString("skin", "");
-					x = node->Attrib("x")->ValueInt();
-					y = node->Attrib("y")->ValueInt();
-					width = node->Attrib("width")->ValueInt();
-					height = node->Attrib("height")->ValueInt();
-					attr = node->Attrib("align_x");
-					if (attr)
-					{
-						std::string align_x_str = attr->ValueString();
-						if ("left" == align_x_str)
-						{
-							align_x = UIDialog::CA_Left;
-						}
-						else
-						{
-							if ("right" == align_x_str)
-							{
-								align_x = UIDialog::CA_Right;
-							}
-							else
-							{
-								BOOST_ASSERT("center" == align_x_str);
-								align_x = UIDialog::CA_Center;
-							}
-						}
-					}
-					attr = node->Attrib("align_y");
-					if (attr)
-					{
-						std::string align_y_str = attr->ValueString();
-						if ("top" == align_y_str)
-						{
-							align_y = UIDialog::CA_Top;
-						}
-						else
-						{
-							if ("bottom" == align_y_str)
-							{
-								align_y = UIDialog::CA_Bottom;
-							}
-							else
-							{
-								BOOST_ASSERT("middle" == align_y_str);
-								align_y = UIDialog::CA_Middle;
-							}
-						}
-					}
+				ctrl_ids.push_back(ctrl_node->Attrib("id")->ValueString());
+			}
+			std::sort(ctrl_ids.begin(), ctrl_ids.end());
+			ctrl_ids.erase(std::unique(ctrl_ids.begin(), ctrl_ids.end()), ctrl_ids.end());
 
-					TexturePtr tex;
-					if (!skin.empty())
+			for (XMLNodePtr ctrl_node = node->FirstNode("control"); ctrl_node; ctrl_node = ctrl_node->NextSibling("control"))
+			{
+				int32_t x, y;
+				uint32_t width, height;
+				bool is_default = false;
+				bool visible = true;
+				UIDialog::ControlAlignment align_x = UIDialog::CA_Left, align_y = UIDialog::CA_Top;
+
+				uint32_t id;
+				{
+					std::string_view id_str = ctrl_node->Attrib("id")->ValueString();
+					id = static_cast<uint32_t>(std::find(ctrl_ids.begin(), ctrl_ids.end(), id_str) - ctrl_ids.begin());
+					dlg->AddIDName(std::string(id_str), id);
+				}
+
+				x = ctrl_node->Attrib("x")->ValueInt();
+				y = ctrl_node->Attrib("y")->ValueInt();
+				width = ctrl_node->Attrib("width")->ValueInt();
+				height = ctrl_node->Attrib("height")->ValueInt();
+				is_default = ReadBool(ctrl_node, "is_default", false);
+				visible = ReadBool(ctrl_node, "visible", true);
+				attr = ctrl_node->Attrib("align_x");
+				if (attr)
+				{
+					std::string_view const align_x_str = attr->ValueString();
+					if ("left" == align_x_str)
 					{
-						tex = SyncLoadTexture(skin, EAH_GPU_Read | EAH_Immutable);
+						align_x = UIDialog::CA_Left;
 					}
-					dlg = this->MakeDialog(tex);
-					dlg->SetID(id);
+					else if ("right" == align_x_str)
+					{
+						align_x = UIDialog::CA_Right;
+					}
+					else
+					{
+						BOOST_ASSERT("center" == align_x_str);
+						align_x = UIDialog::CA_Center;
+					}
+				}
+				attr = ctrl_node->Attrib("align_y");
+				if (attr)
+				{
+					std::string_view const align_y_str = attr->ValueString();
+					if ("top" == align_y_str)
+					{
+						align_y = UIDialog::CA_Top;
+					}
+					else if ("bottom" == align_y_str)
+					{
+						align_y = UIDialog::CA_Bottom;
+					}
+					else
+					{
+						BOOST_ASSERT("middle" == align_y_str);
+						align_y = UIDialog::CA_Middle;
+					}
+				}
+
+				{
+					UIDialog::ControlLocation loc = { x, y, align_x, align_y };
+					dlg->CtrlLocation(id, loc);
+				}
+
+				std::string_view const type_str = ctrl_node->Attrib("type")->ValueString();
+				size_t const type_str_hash = HashRange(type_str.begin(), type_str.end());
+				if (CT_HASH("static") == type_str_hash)
+				{
+					std::string_view const caption = ctrl_node->Attrib("caption")->ValueString();
 					std::wstring wcaption;
 					Convert(wcaption, caption);
-					dlg->SetCaptionText(wcaption);
-
-					dlg->EnableCaption(ReadBool(node, "show_caption", true));
-					dlg->AlwaysInOpacity(ReadBool(node, "opacity", false));
-
-					Color bg_clr(0.4f, 0.6f, 0.8f, 1);
-					attr = node->Attrib("bg_color_r");
-					if (attr)
-					{
-						bg_clr.r() = attr->ValueFloat();
-					}
-					attr = node->Attrib("bg_color_g");
-					if (attr)
-					{
-						bg_clr.g() = attr->ValueFloat();
-					}
-					attr = node->Attrib("bg_color_b");
-					if (attr)
-					{
-						bg_clr.b() = attr->ValueFloat();
-					}
-					attr = node->Attrib("bg_color_a");
-					if (attr)
-					{
-						bg_clr.a() = attr->ValueFloat();
-					}
-					dlg->SetBackgroundColors(bg_clr);
-
-					UIDialog::ControlLocation loc = { x, y, align_x, align_y };
-					dlg->CtrlLocation(-1, loc);
-					dlg->SetSize(width, height);
+					dlg->AddControl(MakeSharedPtr<UIStatic>(dlg, id, wcaption,
+						int4(x, y, width, height), is_default));
 				}
-
-				std::vector<std::string> ctrl_ids;
-				for (XMLNodePtr ctrl_node = node->FirstNode("control"); ctrl_node; ctrl_node = ctrl_node->NextSibling("control"))
+				else if (CT_HASH("button") == type_str_hash)
 				{
-					ctrl_ids.push_back(ctrl_node->Attrib("id")->ValueString());
+					std::string_view const caption = ctrl_node->Attrib("caption")->ValueString();
+					uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
+					std::wstring wcaption;
+					Convert(wcaption, caption);
+					dlg->AddControl(MakeSharedPtr<UIButton>(dlg, id, wcaption,
+						int4(x, y, width, height), hotkey, is_default));
 				}
-				std::sort(ctrl_ids.begin(), ctrl_ids.end());
-				ctrl_ids.erase(std::unique(ctrl_ids.begin(), ctrl_ids.end()), ctrl_ids.end());
-
-				for (XMLNodePtr ctrl_node = node->FirstNode("control"); ctrl_node; ctrl_node = ctrl_node->NextSibling("control"))
+				else if (CT_HASH("tex_button") == type_str_hash)
 				{
-					int32_t x, y;
-					uint32_t width, height;
-					bool is_default = false;
-					bool visible = true;
-					UIDialog::ControlAlignment align_x = UIDialog::CA_Left, align_y = UIDialog::CA_Top;
-
-					uint32_t id;
-					{
-						std::string id_str = ctrl_node->Attrib("id")->ValueString();
-						id = static_cast<uint32_t>(std::find(ctrl_ids.begin(), ctrl_ids.end(), id_str) - ctrl_ids.begin());
-						dlg->AddIDName(id_str, id);
-					}
-
-					x = ctrl_node->Attrib("x")->ValueInt();
-					y = ctrl_node->Attrib("y")->ValueInt();
-					width = ctrl_node->Attrib("width")->ValueInt();
-					height = ctrl_node->Attrib("height")->ValueInt();
-					is_default = ReadBool(ctrl_node, "is_default", false);
-					visible = ReadBool(ctrl_node, "visible", true);
-					attr = ctrl_node->Attrib("align_x");
+					TexturePtr tex;
+					attr = ctrl_node->Attrib("texture");
 					if (attr)
 					{
-						std::string align_x_str = attr->ValueString();
-						if ("left" == align_x_str)
+						std::string_view const tex_name = attr->ValueString();
+						tex = SyncLoadTexture(std::string(tex_name), EAH_GPU_Read | EAH_Immutable);
+					}
+					uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
+					dlg->AddControl(MakeSharedPtr<UITexButton>(dlg, id, tex,
+						int4(x, y, width, height), hotkey, is_default));
+				}
+				else if (CT_HASH("check_box") == type_str_hash)
+				{
+					std::string_view const caption = ctrl_node->Attrib("caption")->ValueString();
+					bool checked = ReadBool(ctrl_node, "checked", false);
+					uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
+					std::wstring wcaption;
+					Convert(wcaption, caption);
+					dlg->AddControl(MakeSharedPtr<UICheckBox>(dlg, id, wcaption,
+						int4(x, y, width, height), checked, hotkey, is_default));
+				}
+				else if (CT_HASH("radio_button") == type_str_hash)
+				{
+					std::string_view const caption = ctrl_node->Attrib("caption")->ValueString();
+					int32_t button_group = ctrl_node->Attrib("button_group")->ValueInt();
+					bool checked = ReadBool(ctrl_node, "checked", false);
+					uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
+					std::wstring wcaption;
+					Convert(wcaption, caption);
+					dlg->AddControl(MakeSharedPtr<UIRadioButton>(dlg, id, button_group, wcaption,
+						int4(x, y, width, height), checked, hotkey, is_default));
+				}
+				else if (CT_HASH("slider") == type_str_hash)
+				{
+					int32_t min_v = ctrl_node->AttribInt("min", 0);
+					int32_t max_v = ctrl_node->AttribInt("max", 100);
+					int32_t value = ctrl_node->AttribInt("value", 50);
+					dlg->AddControl(MakeSharedPtr<UISlider>(dlg, id,
+						int4(x, y, width, height), min_v, max_v, value, is_default));
+				}
+				else if (CT_HASH("scroll_bar") == type_str_hash)
+				{
+					int32_t track_start = ctrl_node->AttribInt("track_start", 0);
+					int32_t track_end = ctrl_node->AttribInt("track_end", 1);
+					int32_t track_pos = ctrl_node->AttribInt("track_pos", 1);
+					int32_t page_size = ctrl_node->AttribInt("page_size", 1);
+					dlg->AddControl(MakeSharedPtr<UIScrollBar>(dlg, id,
+						int4(x, y, width, height), track_start, track_end, track_pos, page_size));
+				}
+				else if (CT_HASH("list_box") == type_str_hash)
+				{
+					UIListBox::STYLE style = UIListBox::SINGLE_SELECTION;
+					attr = ctrl_node->Attrib("style");
+					if (attr)
+					{
+						std::string_view const style_str = attr->ValueString();
+						if ("single" == style_str)
 						{
-							align_x = UIDialog::CA_Left;
+							style = UIListBox::SINGLE_SELECTION;
 						}
 						else
 						{
-							if ("right" == align_x_str)
-							{
-								align_x = UIDialog::CA_Right;
-							}
-							else
-							{
-								BOOST_ASSERT("center" == align_x_str);
-								align_x = UIDialog::CA_Center;
-							}
+							BOOST_ASSERT("multi" == style_str);
+							style = UIListBox::MULTI_SELECTION;
 						}
 					}
-					attr = ctrl_node->Attrib("align_y");
+					dlg->AddControl(MakeSharedPtr<UIListBox>(dlg, id,
+						int4(x, y, width, height), style ? UIListBox::SINGLE_SELECTION : UIListBox::MULTI_SELECTION));
+
+					for (XMLNodePtr item_node = ctrl_node->FirstNode("item"); item_node; item_node = item_node->NextSibling("item"))
+					{
+						std::string_view const caption = item_node->Attrib("name")->ValueString();
+						std::wstring wcaption;
+						Convert(wcaption, caption);
+						dlg->Control<UIListBox>(id)->AddItem(wcaption);
+					}
+
+					attr = ctrl_node->Attrib("selected");
 					if (attr)
 					{
-						std::string align_y_str = attr->ValueString();
-						if ("top" == align_y_str)
-						{
-							align_y = UIDialog::CA_Top;
-						}
-						else
-						{
-							if ("bottom" == align_y_str)
-							{
-								align_y = UIDialog::CA_Bottom;
-							}
-							else
-							{
-								BOOST_ASSERT("middle" == align_y_str);
-								align_y = UIDialog::CA_Middle;
-							}
-						}
+						dlg->Control<UIListBox>(id)->SelectItem(attr->ValueInt());
 					}
-
-					{
-						UIDialog::ControlLocation loc = { x, y, align_x, align_y };
-						dlg->CtrlLocation(id, loc);
-					}
-
-					std::string type_str = ctrl_node->Attrib("type")->ValueString();
-					size_t const type_str_hash = RT_HASH(type_str.c_str());
-					if (CT_HASH("static") == type_str_hash)
-					{
-						std::string caption = ctrl_node->Attrib("caption")->ValueString();
-						std::wstring wcaption;
-						Convert(wcaption, caption);
-						dlg->AddControl(MakeSharedPtr<UIStatic>(dlg, id, wcaption,
-							int4(x, y, width, height), is_default));
-					}
-					else if (CT_HASH("button") == type_str_hash)
-					{
-						std::string caption = ctrl_node->Attrib("caption")->ValueString();
-						uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
-						std::wstring wcaption;
-						Convert(wcaption, caption);
-						dlg->AddControl(MakeSharedPtr<UIButton>(dlg, id, wcaption,
-							int4(x, y, width, height), hotkey, is_default));
-					}
-					else if (CT_HASH("tex_button") == type_str_hash)
-					{
-						TexturePtr tex;
-						attr = ctrl_node->Attrib("texture");
-						if (attr)
-						{
-							std::string tex_name = attr->ValueString();
-							tex = SyncLoadTexture(tex_name, EAH_GPU_Read | EAH_Immutable);
-						}
-						uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
-						dlg->AddControl(MakeSharedPtr<UITexButton>(dlg, id, tex,
-							int4(x, y, width, height), hotkey, is_default));
-					}
-					else if (CT_HASH("check_box") == type_str_hash)
-					{
-						std::string caption = ctrl_node->Attrib("caption")->ValueString();
-						bool checked = ReadBool(ctrl_node, "checked", false);
-						uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
-						std::wstring wcaption;
-						Convert(wcaption, caption);
-						dlg->AddControl(MakeSharedPtr<UICheckBox>(dlg, id, wcaption,
-							int4(x, y, width, height), checked, hotkey, is_default));
-					}
-					else if (CT_HASH("radio_button") == type_str_hash)
-					{
-						std::string caption = ctrl_node->Attrib("caption")->ValueString();
-						int32_t button_group = ctrl_node->Attrib("button_group")->ValueInt();
-						bool checked = ReadBool(ctrl_node, "checked", false);
-						uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
-						std::wstring wcaption;
-						Convert(wcaption, caption);
-						dlg->AddControl(MakeSharedPtr<UIRadioButton>(dlg, id, button_group, wcaption,
-							int4(x, y, width, height), checked, hotkey, is_default));
-					}
-					else if (CT_HASH("slider") == type_str_hash)
-					{
-						int32_t min_v = ctrl_node->AttribInt("min", 0);
-						int32_t max_v = ctrl_node->AttribInt("max", 100);
-						int32_t value = ctrl_node->AttribInt("value", 50);
-						dlg->AddControl(MakeSharedPtr<UISlider>(dlg, id,
-							int4(x, y, width, height), min_v, max_v, value, is_default));
-					}
-					else if (CT_HASH("scroll_bar") == type_str_hash)
-					{
-						int32_t track_start = ctrl_node->AttribInt("track_start", 0);
-						int32_t track_end = ctrl_node->AttribInt("track_end", 1);
-						int32_t track_pos = ctrl_node->AttribInt("track_pos", 1);
-						int32_t page_size = ctrl_node->AttribInt("page_size", 1);
-						dlg->AddControl(MakeSharedPtr<UIScrollBar>(dlg, id,
-							int4(x, y, width, height), track_start, track_end, track_pos, page_size));
-					}
-					else if (CT_HASH("list_box") == type_str_hash)
-					{
-						UIListBox::STYLE style = UIListBox::SINGLE_SELECTION;
-						attr = ctrl_node->Attrib("style");
-						if (attr)
-						{
-							std::string style_str = attr->ValueString();
-							if ("single" == style_str)
-							{
-								style = UIListBox::SINGLE_SELECTION;
-							}
-							else
-							{
-								BOOST_ASSERT("multi" == style_str);
-								style = UIListBox::MULTI_SELECTION;
-							}
-						}
-						dlg->AddControl(MakeSharedPtr<UIListBox>(dlg, id,
-							int4(x, y, width, height), style ? UIListBox::SINGLE_SELECTION : UIListBox::MULTI_SELECTION));
-
-						for (XMLNodePtr item_node = ctrl_node->FirstNode("item"); item_node; item_node = item_node->NextSibling("item"))
-						{
-							std::string caption = item_node->Attrib("name")->ValueString();
-							std::wstring wcaption;
-							Convert(wcaption, caption);
-							dlg->Control<UIListBox>(id)->AddItem(wcaption);
-						}
-
-						attr = ctrl_node->Attrib("selected");
-						if (attr)
-						{
-							dlg->Control<UIListBox>(id)->SelectItem(attr->ValueInt());
-						}
-					}
-					else if (CT_HASH("combo_box") == type_str_hash)
-					{
-						uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
-						dlg->AddControl(MakeSharedPtr<UIComboBox>(dlg, id,
-							int4(x, y, width, height), hotkey, is_default));
-
-						for (XMLNodePtr item_node = ctrl_node->FirstNode("item"); item_node; item_node = item_node->NextSibling("item"))
-						{
-							std::string caption = item_node->Attrib("name")->ValueString();
-							std::wstring wcaption;
-							Convert(wcaption, caption);
-							dlg->Control<UIComboBox>(id)->AddItem(wcaption);
-						}
-
-						attr = ctrl_node->Attrib("selected");
-						if (attr)
-						{
-							dlg->Control<UIComboBox>(id)->SetSelectedByIndex(attr->ValueInt());
-						}
-					}
-					else if (CT_HASH("edit_box") == type_str_hash)
-					{
-						std::string caption = ctrl_node->Attrib("caption")->ValueString();
-						std::wstring wcaption;
-						Convert(wcaption, caption);
-						dlg->AddControl(MakeSharedPtr<UIEditBox>(dlg, id, wcaption,
-							int4(x, y, width, height), is_default));
-					}
-					else if (CT_HASH("polyline_edit_box") == type_str_hash)
-					{
-						Color line_clr(0, 1, 0, 1);
-						line_clr.r() = ctrl_node->AttribFloat("line_r", 0);
-						line_clr.g() = ctrl_node->AttribFloat("line_g", 1);
-						line_clr.b() = ctrl_node->AttribFloat("line_b", 0);
-						line_clr.a() = ctrl_node->AttribFloat("line_a", 1);
-						dlg->AddControl(MakeSharedPtr<UIPolylineEditBox>(dlg, id,
-							int4(x, y, width, height), is_default));
-						dlg->Control<UIPolylineEditBox>(id)->SetColor(line_clr);
-					}
-					else if (CT_HASH("progress_bar") == type_str_hash)
-					{
-						int32_t progress = ctrl_node->AttribInt("value", 0);
-						dlg->AddControl(MakeSharedPtr<UIProgressBar>(dlg, id, progress,
-							int4(x, y, width, height), is_default));
-					}
-
-					dlg->GetControl(id)->SetVisible(visible);
 				}
+				else if (CT_HASH("combo_box") == type_str_hash)
+				{
+					uint8_t hotkey = static_cast<uint8_t>(ctrl_node->AttribInt("hotkey", 0));
+					dlg->AddControl(MakeSharedPtr<UIComboBox>(dlg, id,
+						int4(x, y, width, height), hotkey, is_default));
+
+					for (XMLNodePtr item_node = ctrl_node->FirstNode("item"); item_node; item_node = item_node->NextSibling("item"))
+					{
+						std::string_view const caption = item_node->Attrib("name")->ValueString();
+						std::wstring wcaption;
+						Convert(wcaption, caption);
+						dlg->Control<UIComboBox>(id)->AddItem(wcaption);
+					}
+
+					attr = ctrl_node->Attrib("selected");
+					if (attr)
+					{
+						dlg->Control<UIComboBox>(id)->SetSelectedByIndex(attr->ValueInt());
+					}
+				}
+				else if (CT_HASH("edit_box") == type_str_hash)
+				{
+					std::string_view const caption = ctrl_node->Attrib("caption")->ValueString();
+					std::wstring wcaption;
+					Convert(wcaption, caption);
+					dlg->AddControl(MakeSharedPtr<UIEditBox>(dlg, id, wcaption,
+						int4(x, y, width, height), is_default));
+				}
+				else if (CT_HASH("polyline_edit_box") == type_str_hash)
+				{
+					Color line_clr(0, 1, 0, 1);
+					line_clr.r() = ctrl_node->AttribFloat("line_r", 0);
+					line_clr.g() = ctrl_node->AttribFloat("line_g", 1);
+					line_clr.b() = ctrl_node->AttribFloat("line_b", 0);
+					line_clr.a() = ctrl_node->AttribFloat("line_a", 1);
+					dlg->AddControl(MakeSharedPtr<UIPolylineEditBox>(dlg, id,
+						int4(x, y, width, height), is_default));
+					dlg->Control<UIPolylineEditBox>(id)->SetColor(line_clr);
+				}
+				else if (CT_HASH("progress_bar") == type_str_hash)
+				{
+					int32_t progress = ctrl_node->AttribInt("value", 0);
+					dlg->AddControl(MakeSharedPtr<UIProgressBar>(dlg, id, progress,
+						int4(x, y, width, height), is_default));
+				}
+
+				dlg->GetControl(id)->SetVisible(visible);
 			}
 		}
 	}
@@ -770,7 +770,7 @@ namespace KlayGE
 
 	size_t UIManager::AddFont(FontPtr const & font, float font_size)
 	{
-		font_cache_.push_back(std::make_pair(font, font_size));
+		font_cache_.emplace_back(font, font_size);
 		return font_cache_.size() - 1;
 	}
 
@@ -850,7 +850,7 @@ namespace KlayGE
 		}
 	}
 
-	UIDialogPtr const & UIManager::GetDialog(std::string const & id) const
+	UIDialogPtr const & UIManager::GetDialog(std::string_view id) const
 	{
 		for (size_t i = 0; i < dialogs_.size(); ++ i)
 		{
@@ -910,37 +910,28 @@ namespace KlayGE
 
 	void UIManager::Render()
 	{
-		typedef KLAYGE_DECLTYPE(rects_) RectsType;
-		KLAYGE_FOREACH(RectsType::reference rect, rects_)
-		{
-			checked_pointer_cast<UIRectRenderable>(rect.second)->Clear();
-		}
-		typedef KLAYGE_DECLTYPE(strings_) StringsType;
-		KLAYGE_FOREACH(StringsType::reference str, strings_)
+		for (auto& str : strings_)
 		{
 			str.second.clear();
 		}
 
-		typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-		KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+		for (auto const & dialog : dialogs_)
 		{
 			dialog->Render();
 		}
 
-		KLAYGE_FOREACH(RectsType::reference rect, rects_)
+		for (auto const & rect : rects_)
 		{
 			if (!checked_pointer_cast<UIRectRenderable>(rect.second)->Empty())
 			{
-				shared_ptr<UIRectObject> ui_rect_obj = MakeSharedPtr<UIRectObject>(rect.second, SceneObject::SOA_Overlay);
-				ui_rect_obj->AddToSceneManager();
+				auto ui_rect_obj = MakeSharedPtr<SceneNode>(MakeSharedPtr<RenderableComponent>(rect.second), SceneNode::SOA_Overlay);
+				Context::Instance().SceneManagerInstance().OverlayRootNode().AddChild(ui_rect_obj);
 			}
 		}
-		KLAYGE_FOREACH(StringsType::reference str, strings_)
+		for (auto const & str : strings_)
 		{
-			typedef KLAYGE_DECLTYPE(font_cache_) FontCacheType;
-			FontCacheType::reference font = font_cache_[str.first];
-			typedef KLAYGE_DECLTYPE(str.second) StrType;
-			KLAYGE_FOREACH(StrType::reference s, str.second)
+			auto const & font = font_cache_[str.first];
+			for (auto const & s : str.second)
 			{
 				font.first->RenderText(s.rc, s.depth, 1, 1, s.clr, s.text, font.second, s.align);
 			}
@@ -963,7 +954,7 @@ namespace KlayGE
 			texcoord = Rect(0, 0, 0, 0);
 		}
 
-		shared_ptr<UIRectRenderable> renderable;
+		std::shared_ptr<UIRectRenderable> renderable;
 		if (rects_.find(texture) == rects_.end())
 		{
 			renderable = MakeSharedPtr<UIRectRenderable>(texture, effect_);
@@ -975,44 +966,22 @@ namespace KlayGE
 		}
 		BOOST_ASSERT(renderable);
 
-		std::vector<VertexFormat>& vertices = renderable->Vertices();
-		std::vector<uint16_t>& indices = renderable->Indices();
-		vertices.reserve(vertices.size() + 4);
+		std::vector<VertexFormat> vertices(4);
+		vertices[0] = VertexFormat(pos + float3(0, 0, 0),
+			clrs[0], float2(texcoord.left(), texcoord.top()));
+		vertices[1] = VertexFormat(pos + float3(width, 0, 0),
+			clrs[1], float2(texcoord.right(), texcoord.top()));
+		vertices[2] = VertexFormat(pos + float3(width, height, 0),
+			clrs[2], float2(texcoord.right(), texcoord.bottom()));
+		vertices[3] = VertexFormat(pos + float3(0, height, 0),
+			clrs[3], float2(texcoord.left(), texcoord.bottom()));
 
-		uint16_t const last_index = static_cast<uint16_t>(vertices.size());
-		if (renderable->PriRestart())
-		{
-			indices.reserve(indices.size() + 5);
-			indices.push_back(last_index + 0);
-			indices.push_back(last_index + 1);
-			indices.push_back(last_index + 3);
-			indices.push_back(last_index + 2);
-			indices.push_back(0xFFFF);
-		}
-		else
-		{
-			indices.reserve(indices.size() + 6);
-			indices.push_back(last_index + 0);
-			indices.push_back(last_index + 1);
-			indices.push_back(last_index + 2);
-			indices.push_back(last_index + 2);
-			indices.push_back(last_index + 3);
-			indices.push_back(last_index + 0);
-		}
-
-		vertices.push_back(VertexFormat(pos + float3(0, 0, 0),
-			clrs[0], float2(texcoord.left(), texcoord.top())));
-		vertices.push_back(VertexFormat(pos + float3(width, 0, 0),
-			clrs[1], float2(texcoord.right(), texcoord.top())));
-		vertices.push_back(VertexFormat(pos + float3(width, height, 0),
-			clrs[2], float2(texcoord.right(), texcoord.bottom())));
-		vertices.push_back(VertexFormat(pos + float3(0, height, 0),
-			clrs[3], float2(texcoord.left(), texcoord.bottom())));
+		renderable->AddQuad(vertices);
 	}
 
 	void UIManager::DrawQuad(float3 const & offset, VertexFormat const * vertices, TexturePtr const & texture)
 	{
-		shared_ptr<UIRectRenderable> renderable;
+		std::shared_ptr<UIRectRenderable> renderable;
 		if (rects_.find(texture) == rects_.end())
 		{
 			renderable = MakeSharedPtr<UIRectRenderable>(texture, effect_);
@@ -1024,39 +993,17 @@ namespace KlayGE
 		}
 		BOOST_ASSERT(renderable);
 
-		std::vector<VertexFormat>& verts = renderable->Vertices();
-		std::vector<uint16_t>& indices = renderable->Indices();
-		verts.reserve(verts.size() + 4);
+		std::vector<VertexFormat> verts(4);
+		verts[0] = VertexFormat(offset + vertices[0].pos,
+			vertices[0].clr, vertices[0].tex);
+		verts[1] = VertexFormat(offset + vertices[1].pos,
+			vertices[1].clr, vertices[1].tex);
+		verts[2] = VertexFormat(offset + vertices[2].pos,
+			vertices[2].clr, vertices[2].tex);
+		verts[3] = VertexFormat(offset + vertices[3].pos,
+			vertices[3].clr, vertices[3].tex);
 
-		uint16_t const last_index = static_cast<uint16_t>(verts.size());
-		if (renderable->PriRestart())
-		{
-			indices.reserve(indices.size() + 5);
-			indices.push_back(last_index + 0);
-			indices.push_back(last_index + 1);
-			indices.push_back(last_index + 3);
-			indices.push_back(last_index + 2);
-			indices.push_back(0xFFFF);
-		}
-		else
-		{
-			indices.reserve(indices.size() + 6);
-			indices.push_back(last_index + 0);
-			indices.push_back(last_index + 1);
-			indices.push_back(last_index + 2);
-			indices.push_back(last_index + 2);
-			indices.push_back(last_index + 3);
-			indices.push_back(last_index + 0);
-		}
-
-		verts.push_back(VertexFormat(offset + vertices[0].pos,
-			vertices[0].clr, vertices[0].tex));
-		verts.push_back(VertexFormat(offset + vertices[1].pos,
-			vertices[1].clr, vertices[1].tex));
-		verts.push_back(VertexFormat(offset + vertices[2].pos,
-			vertices[2].clr, vertices[2].tex));
-		verts.push_back(VertexFormat(offset + vertices[3].pos,
-			vertices[3].clr, vertices[3].tex));
+		renderable->AddQuad(verts);
 	}
 
 	void UIManager::DrawString(std::wstring const & strText, uint32_t font_index,
@@ -1074,8 +1021,7 @@ namespace KlayGE
 	Size_T<float> UIManager::CalcSize(std::wstring const & strText, uint32_t font_index,
 		IRect const & /*rc*/, uint32_t /*align*/)
 	{
-		typedef KLAYGE_DECLTYPE(font_cache_) FontCacheType;
-		FontCacheType::reference font = font_cache_[font_index];
+		auto const & font = font_cache_[font_index];
 		return font.first->CalcSize(strText, font.second);
 	}
 
@@ -1092,8 +1038,7 @@ namespace KlayGE
 					uint16_t shift_ctrl_alt = ((param->buttons_down[KS_LeftShift] || param->buttons_down[KS_RightShift]) ? MB_Shift : 0)
 						| ((param->buttons_down[KS_LeftCtrl] || param->buttons_down[KS_RightCtrl]) ? MB_Ctrl : 0)
 						| ((param->buttons_down[KS_LeftAlt] || param->buttons_down[KS_RightAlt]) ? MB_Alt : 0);
-					typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-					KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+					for (auto const & dialog : dialogs_)
 					{
 						if (dialog->GetVisible())
 						{
@@ -1124,15 +1069,18 @@ namespace KlayGE
 			case InputEngine::IDT_Mouse:
 				{
 					InputMouseActionParamPtr param = checked_pointer_cast<InputMouseActionParam>(action.second);
+					int2 abs_coord = param->abs_coord;
+					float const dpi_scale = Context::Instance().AppInstance().MainWnd()->DPIScale();
+					abs_coord.x() = static_cast<int32_t>(abs_coord.x() / dpi_scale);
+					abs_coord.y() = static_cast<int32_t>(abs_coord.y() / dpi_scale);
 					mouse_on_ui_ = false;
-					typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-					KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+					for (auto const & dialog : dialogs_)
 					{
-						if (dialog->GetVisible() && dialog->ContainsPoint(param->abs_coord))
+						if (dialog->GetVisible() && dialog->ContainsPoint(abs_coord))
 						{
 							mouse_on_ui_ = true;
 						}
-						dialog->MouseOverHandler(param->buttons_state, param->abs_coord);
+						dialog->MouseOverHandler(param->buttons_state, abs_coord);
 					}
 				}
 				break;
@@ -1148,15 +1096,18 @@ namespace KlayGE
 			case InputEngine::IDT_Mouse:
 				{
 					InputMouseActionParamPtr param = checked_pointer_cast<InputMouseActionParam>(action.second);
+					int2 abs_coord = param->abs_coord;
+					float const dpi_scale = Context::Instance().AppInstance().MainWnd()->DPIScale();
+					abs_coord.x() = static_cast<int32_t>(abs_coord.x() / dpi_scale);
+					abs_coord.y() = static_cast<int32_t>(abs_coord.y() / dpi_scale);
 					mouse_on_ui_ = false;
-					typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-					KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+					for (auto const & dialog : dialogs_)
 					{
-						if (dialog->GetVisible() && dialog->ContainsPoint(param->abs_coord))
+						if (dialog->GetVisible() && dialog->ContainsPoint(abs_coord))
 						{
 							mouse_on_ui_ = true;
 						}
-						dialog->MouseWheelHandler(param->buttons_state, param->abs_coord, param->wheel_delta);
+						dialog->MouseWheelHandler(param->buttons_state, abs_coord, param->wheel_delta);
 					}
 				}
 				break;
@@ -1172,21 +1123,24 @@ namespace KlayGE
 			case InputEngine::IDT_Mouse:
 				{
 					InputMouseActionParamPtr param = checked_pointer_cast<InputMouseActionParam>(action.second);
+					int2 abs_coord = param->abs_coord;
+					float const dpi_scale = Context::Instance().AppInstance().MainWnd()->DPIScale();
+					abs_coord.x() = static_cast<int32_t>(abs_coord.x() / dpi_scale);
+					abs_coord.y() = static_cast<int32_t>(abs_coord.y() / dpi_scale);
 					mouse_on_ui_ = false;
-					typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-					KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+					for (auto const & dialog : dialogs_)
 					{
-						if (dialog->GetVisible() && dialog->ContainsPoint(param->abs_coord))
+						if (dialog->GetVisible() && dialog->ContainsPoint(abs_coord))
 						{
 							mouse_on_ui_ = true;
 						}
 						if (param->buttons_down & MB_Left)
 						{
-							dialog->MouseDownHandler(param->buttons_down, param->abs_coord);
+							dialog->MouseDownHandler(param->buttons_down, abs_coord);
 						}
 						else if (param->buttons_up & MB_Left)
 						{
-							dialog->MouseUpHandler(param->buttons_up, param->abs_coord);
+							dialog->MouseUpHandler(param->buttons_up, abs_coord);
 						}
 					}
 				}
@@ -1203,25 +1157,28 @@ namespace KlayGE
 			case InputEngine::IDT_Touch:
 				{
 					InputTouchActionParamPtr param = checked_pointer_cast<InputTouchActionParam>(action.second);
+					int2 abs_coord = param->touches_coord[0];
+					float const dpi_scale = Context::Instance().AppInstance().MainWnd()->DPIScale();
+					abs_coord.x() = static_cast<int32_t>(abs_coord.x() / dpi_scale);
+					abs_coord.y() = static_cast<int32_t>(abs_coord.y() / dpi_scale);
 					mouse_on_ui_ = false;
-					typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-					KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+					for (auto const & dialog : dialogs_)
 					{
-						if (dialog->GetVisible() && dialog->ContainsPoint(param->touches_coord[0]))
+						if (dialog->GetVisible() && dialog->ContainsPoint(abs_coord))
 						{
 							mouse_on_ui_ = true;
 						}
 						if (param->touches_down & 1UL)
 						{
-							dialog->MouseDownHandler(MB_Left, param->touches_coord[0]);
+							dialog->MouseDownHandler(MB_Left, abs_coord);
 						}
 						else if (param->touches_up & 1UL)
 						{
-							dialog->MouseUpHandler(MB_Left, param->touches_coord[0]);
+							dialog->MouseUpHandler(MB_Left, abs_coord);
 						}
 						else if (param->touches_state & 1UL)
 						{
-							dialog->MouseOverHandler(MB_Left, param->touches_coord[0]);
+							dialog->MouseOverHandler(MB_Left, abs_coord);
 						}
 					}
 				}
@@ -1250,8 +1207,7 @@ namespace KlayGE
 
 	void UIManager::SettleCtrls()
 	{
-		typedef KLAYGE_DECLTYPE(dialogs_) DialogsType;
-		KLAYGE_FOREACH(DialogsType::reference dialog, dialogs_)
+		for (auto const & dialog : dialogs_)
 		{
 			dialog->SettleCtrls();
 		}
@@ -1259,9 +1215,9 @@ namespace KlayGE
 
 
 	UIDialog::UIDialog(TexturePtr const & control_tex)
-			: keyboard_input_(false), mouse_input_(true), default_control_id_(0xFFFF),
+			: keyboard_input_(false), mouse_input_(true),
 					visible_(true), show_caption_(true),
-					minimized_(false), drag_(false),
+					minimized_(false),
 					bounding_box_(0, 0, 0, 0),
 					caption_height_(18),
 					top_left_clr_(0, 0, 0, 0), top_right_clr_(0, 0, 0, 0),
@@ -1269,17 +1225,28 @@ namespace KlayGE
 					opacity_(0.5f)
 	{
 		TexturePtr ct;
-		if (!control_tex)
-		{
-			ct = SyncLoadTexture("ui.dds", EAH_GPU_Read | EAH_Immutable);
-		}
-		else
+		if (control_tex)
 		{
 			ct = control_tex;
 		}
+		else
+		{
+			ct = SyncLoadTexture("ui.dds", EAH_GPU_Read | EAH_Immutable);
+		}
 
 		tex_index_ = UIManager::Instance().AddTexture(ct);
-		this->InitDefaultElements();
+
+		this->SetFont(0, SyncLoadFont("gkai00mp.kfont"), 12);
+
+		// Element for the caption
+		cap_element_.SetFont(0);
+		cap_element_.SetTexture(static_cast<uint32_t>(tex_index_), IRect(17, 269, 241, 287));
+		cap_element_.TextureColor().States[UICS_Normal] = Color(0.4f, 0.6f, 0.4f, 1);
+		cap_element_.FontColor().States[UICS_Normal] = Color(1, 1, 1, 1);
+		cap_element_.SetFont(0, Color(1, 1, 1, 1), Font::FA_Hor_Left | Font::FA_Ver_Middle);
+		// Pre-blend as we don't need to transition the state
+		cap_element_.TextureColor().SetState(UICS_Normal);
+		cap_element_.FontColor().SetState(UICS_Normal);
 	}
 
 	UIDialog::~UIDialog()
@@ -1303,8 +1270,7 @@ namespace KlayGE
 	UIControlPtr const & UIDialog::GetControl(int ID) const
 	{
 		// Try to find the control with the given ID
-		typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-		KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
+		for (auto const & control : controls_)
 		{
 			if (control->GetID() == ID)
 			{
@@ -1320,8 +1286,7 @@ namespace KlayGE
 	UIControlPtr const & UIDialog::GetControl(int ID, uint32_t type) const
 	{
 		// Try to find the control with the given ID
-		typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-		KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
+		for (auto const & control : controls_)
 		{
 			if ((control->GetID() == ID) && (control->GetType() == type))
 			{
@@ -1338,8 +1303,7 @@ namespace KlayGE
 	{
 		// Search through all child controls for the first one which
 		// contains the mouse point
-		typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-		KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
+		for (auto const & control : controls_)
 		{
 			if (!control)
 			{
@@ -1395,7 +1359,7 @@ namespace KlayGE
 			|| (bottom_right_clr_.a() != 0) || (bottom_left_clr_.a() != 0);
 		if (!minimized_ && bBackgroundIsVisible)
 		{
-			array<Color, 4> clrs;
+			std::array<Color, 4> clrs;
 			clrs[0] = top_left_clr_;
 			clrs[1] = top_right_clr_;
 			clrs[2] = bottom_right_clr_;
@@ -1462,7 +1426,7 @@ namespace KlayGE
 		// its controls.
 		if (!minimized_)
 		{
-			std::vector<std::vector<size_t> > intersected_groups;
+			std::vector<std::vector<size_t>> intersected_groups;
 			for (size_t i = 0; i < controls_.size(); ++ i)
 			{
 				for (size_t j = 0; j < i; ++ j)
@@ -1504,9 +1468,7 @@ namespace KlayGE
 
 			for (size_t i = 0; i < controls_.size(); ++ i)
 			{
-				typedef KLAYGE_DECLTYPE(intersected_controls) ControlsType;
-				ControlsType::iterator iter
-					= std::lower_bound(intersected_controls.begin(), intersected_controls.end(), i);
+				auto iter = std::lower_bound(intersected_controls.begin(), intersected_controls.end(), i);
 				if ((iter == intersected_controls.end()) || (*iter != i))
 				{
 					controls_[i]->Render();
@@ -1559,16 +1521,8 @@ namespace KlayGE
 		if (!inside)
 		{
 			int2 const local_pt = this->ToLocal(pt);
-
-			typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-			KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
-			{
-				if (control->ContainsPoint(local_pt))
-				{
-					inside = true;
-					break;
-				}
-			}
+			inside = std::any_of(
+				controls_.begin(), controls_.end(), [local_pt](UIControlPtr const& control) { return control->ContainsPoint(local_pt); });
 		}
 		return inside;
 	}
@@ -1636,15 +1590,14 @@ namespace KlayGE
 	void UIDialog::ClearRadioButtonGroup(uint32_t nButtonGroup)
 	{
 		// Find all radio buttons with the given group number
-		typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-		KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
+		for (auto const & control : controls_)
 		{
 			if (UICT_RadioButton == control->GetType())
 			{
-				UIRadioButton* pRadioButton = checked_cast<UIRadioButton*>(control.get());
-				if (pRadioButton->GetButtonGroup() == nButtonGroup)
+				auto& radio_button = checked_cast<UIRadioButton&>(*control);
+				if (radio_button.GetButtonGroup() == nButtonGroup)
 				{
-					pRadioButton->SetChecked(false, false);
+					radio_button.SetChecked(false, false);
 				}
 			}
 		}
@@ -1699,8 +1652,7 @@ namespace KlayGE
 		}
 		control_mouse_over_.reset();
 
-		typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-		KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
+		for (auto const & control : controls_)
 		{
 			control->Refresh();
 		}
@@ -1736,8 +1688,7 @@ namespace KlayGE
 	void UIDialog::FocusDefaultControl()
 	{
 		// Check for default control in this dialog
-		typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-		KLAYGE_FOREACH(ControlsType::const_reference control, controls_)
+		for (auto const & control : controls_)
 		{
 			if (control->GetIsDefault())
 			{
@@ -1762,7 +1713,7 @@ namespace KlayGE
 		}
 
 		float3 pos(static_cast<float>(rcScreen.left()), static_cast<float>(rcScreen.top()), depth_base_ + depth);
-		array<Color, 4> clrs;
+		std::array<Color, 4> clrs;
 		clrs.fill(clr);
 		if (!always_in_opacity_)
 		{
@@ -1805,7 +1756,7 @@ namespace KlayGE
 		}
 
 		float3 pos(static_cast<float>(rcScreen.left()), static_cast<float>(rcScreen.top()), depth_base_ + depth_bias);
-		array<Color, 4> clrs;
+		std::array<Color, 4> clrs;
 		clrs.fill(element.TextureColor().Current);
 		if (!always_in_opacity_)
 		{
@@ -1875,22 +1826,6 @@ namespace KlayGE
 		return size;
 	}
 
-	// Initialize default Elements
-	void UIDialog::InitDefaultElements()
-	{
-		this->SetFont(0, SyncLoadFont("gkai00mp.kfont"), 12);
-
-		// Element for the caption
-		cap_element_.SetFont(0);
-		cap_element_.SetTexture(static_cast<uint32_t>(tex_index_), IRect(17, 269, 241, 287));
-		cap_element_.TextureColor().States[UICS_Normal] = Color(0.4f, 0.6f, 0.4f, 1);
-		cap_element_.FontColor().States[UICS_Normal] = Color(1, 1, 1, 1);
-		cap_element_.SetFont(0, Color(1, 1, 1, 1), Font::FA_Hor_Left | Font::FA_Ver_Middle);
-		// Pre-blend as we don't need to transition the state
-		cap_element_.TextureColor().SetState(UICS_Normal);
-		cap_element_.FontColor().SetState(UICS_Normal);
-	}
-
 	bool UIDialog::OnCycleFocus(bool bForward)
 	{
 		for (size_t i = 0; i < controls_.size(); ++ i)
@@ -1929,7 +1864,7 @@ namespace KlayGE
 
 	void UIDialog::AddIDName(std::string const & name, int id)
 	{
-		id_name_.insert(std::make_pair(name, id));
+		id_name_.emplace(name, id);
 	}
 
 	int UIDialog::IDFromName(std::string const & name)
@@ -1939,7 +1874,7 @@ namespace KlayGE
 
 	void UIDialog::CtrlLocation(int id, UIDialog::ControlLocation const & loc)
 	{
-		id_location_.insert(std::make_pair(id, loc));
+		id_location_.emplace(id, loc);
 	}
 
 	UIDialog::ControlLocation const & UIDialog::CtrlLocation(int id)
@@ -1949,12 +1884,12 @@ namespace KlayGE
 
 	void UIDialog::SettleCtrls()
 	{
+		float const dpi_scale = Context::Instance().AppInstance().MainWnd()->DPIScale();
 		RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
-		uint32_t width = re.ScreenFrameBuffer()->Width();
-		uint32_t height = re.ScreenFrameBuffer()->Height();
+		uint32_t width = static_cast<uint32_t>(re.ScreenFrameBuffer()->Width() / dpi_scale);
+		uint32_t height = static_cast<uint32_t>(re.ScreenFrameBuffer()->Height() / dpi_scale);
 
-		typedef KLAYGE_DECLTYPE(id_location_) IDLocationType;
-		KLAYGE_FOREACH(IDLocationType::reference id_loc, id_location_)
+		for (auto const & id_loc : id_location_)
 		{
 			int x = id_loc.second.x;
 			int y = id_loc.second.y;
@@ -1976,8 +1911,7 @@ namespace KlayGE
 				break;
 
 			default:
-				BOOST_ASSERT(false);
-				break;
+				KFL_UNREACHABLE("Invalid alignment mode");
 			}
 
 			switch (id_loc.second.align_y)
@@ -1994,8 +1928,7 @@ namespace KlayGE
 				break;
 
 			default:
-				BOOST_ASSERT(false);
-				break;
+				KFL_UNREACHABLE("Invalid alignment mode");
 			}
 
 			if (id_loc.first < 0)
@@ -2023,8 +1956,7 @@ namespace KlayGE
 				// See if this matches a control's hotkey
 				// Activate the hotkey if the focus doesn't belong to an
 				// edit box.
-				typedef KLAYGE_DECLTYPE(controls_) ControlsType;
-				KLAYGE_FOREACH(ControlsType::reference control, controls_)
+				for (auto const & control : controls_)
 				{
 					if (control->GetHotkey() == static_cast<uint8_t>(key & 0xFF))
 					{

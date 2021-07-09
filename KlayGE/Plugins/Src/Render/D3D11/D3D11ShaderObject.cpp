@@ -1,49 +1,54 @@
-// D3D11ShaderObject.cpp
-// KlayGE D3D11 shader对象类 实现文件
-// Ver 3.9.0
-// 版权所有(C) 龚敏敏, 2009
-// Homepage: http://www.klayge.org
-//
-// 3.9.0
-// 加速Shader编译 (2009.7.31)
-//
-// 3.8.0
-// 支持Gemoetry Shader (2009.2.5)
-// 初次建立 (2009.1.30)
-//
-// 修改记录
-/////////////////////////////////////////////////////////////////////////////////
+/**
+ * @file D3D11ShaderObject.cpp
+ * @author Minmin Gong
+ *
+ * @section DESCRIPTION
+ *
+ * This source file is part of KlayGE
+ * For the latest info, see http://www.klayge.org
+ *
+ * @section LICENSE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * You may alternatively use this source under the terms of
+ * the KlayGE Proprietary License (KPL). You can obtained such a license
+ * from http://www.klayge.org/licensing/.
+ */
 
 #include <KlayGE/KlayGE.hpp>
 #define INITGUID
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
-#include <KFL/COMPtr.hpp>
 #include <KFL/ResIdentifier.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/RenderEffect.hpp>
+#include <KFL/CustomizedStreamBuf.hpp>
+#include <KFL/Hash.hpp>
 
 #include <string>
-#include <map>
 #include <algorithm>
-#include <sstream>
 #include <cstring>
 #include <boost/assert.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 6011 6334)
-#endif
-#include <boost/functional/hash.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
 
-#include <KlayGE/D3D11/D3D11MinGWDefs.hpp>
-#ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
-#include <D3DCompiler.h>
+#if KLAYGE_IS_DEV_PLATFORM
+#include <KlayGE/SALWrapper.hpp>
+#include <d3dcompiler.h>
 #endif
 
 #include <KlayGE/D3D11/D3D11RenderEngine.hpp>
@@ -52,1138 +57,391 @@
 #include <KlayGE/D3D11/D3D11Texture.hpp>
 #include <KlayGE/D3D11/D3D11ShaderObject.hpp>
 
-DEFINE_GUID(IID_ID3D11ShaderReflection_47,
-	0x8d536ca1, 0x0cca, 0x4956, 0xa8, 0x37, 0x78, 0x69, 0x63, 0x75, 0x55, 0x84);
-
-struct D3D11_SIGNATURE_PARAMETER_DESC_47
-{
-	LPCSTR						SemanticName;
-	UINT						SemanticIndex;
-	UINT						Register;
-	D3D_NAME					SystemValueType;
-	D3D_REGISTER_COMPONENT_TYPE	ComponentType;
-	BYTE						Mask;
-	BYTE						ReadWriteMask;
-	UINT						Stream;
-	UINT						MinPrecision;
-};
-
-#if D3D_COMPILER_VERSION < 44
-#define D3DCOMPILER_STRIP_PRIVATE_DATA 8
-#endif
-
 namespace
 {
 	using namespace KlayGE;
 
-	class SetD3D11ShaderParameterSampler
+	class SetD3D11ShaderParameterTextureSRV final
 	{
 	public:
-		SetD3D11ShaderParameterSampler(ID3D11SamplerStatePtr& sampler, RenderEffectParameterPtr const & param)
-			: sampler_(&sampler), param_(param)
-		{
-		}
-
-		void operator()()
-		{
-			SamplerStateObjectPtr sampler;
-			param_->Value(sampler);
-			if (sampler)
-			{
-				*sampler_ = checked_cast<D3D11SamplerStateObject*>(sampler.get())->D3DSamplerState();
-			}
-		}
-
-	private:
-		ID3D11SamplerStatePtr* sampler_;
-		RenderEffectParameterPtr param_;
-	};
-
-	class SetD3D11ShaderParameterTextureSRV
-	{
-	public:
-		SetD3D11ShaderParameterTextureSRV(tuple<void*, uint32_t, uint32_t>& srvsrc, ID3D11ShaderResourceViewPtr& srv, RenderEffectParameterPtr const & param)
+		SetD3D11ShaderParameterTextureSRV(std::tuple<void*, uint32_t, uint32_t>& srvsrc,
+				ID3D11ShaderResourceView*& srv, RenderEffectParameter* param)
 			: srvsrc_(&srvsrc), srv_(&srv), param_(param)
 		{
 		}
 
 		void operator()()
 		{
-			TextureSubresource tex_subres;
-			param_->Value(tex_subres);
-			if (tex_subres.tex)
+			ShaderResourceViewPtr srv;
+			param_->Value(srv);
+			if (srv)
 			{
-				*srvsrc_ = make_tuple(tex_subres.tex.get(),
-					tex_subres.first_array_index * tex_subres.tex->NumMipMaps() + tex_subres.first_level,
-					tex_subres.num_items * tex_subres.num_levels);
-				*srv_ = checked_cast<D3D11Texture*>(tex_subres.tex.get())->RetriveD3DShaderResourceView(
-					tex_subres.first_array_index, tex_subres.num_items,
-					tex_subres.first_level, tex_subres.num_levels);
+				if (srv->TextureResource())
+				{
+					*srvsrc_ = std::make_tuple(srv->TextureResource().get(),
+						srv->FirstArrayIndex() * srv->TextureResource()->NumMipMaps() + srv->FirstLevel(),
+						srv->ArraySize() * srv->NumLevels());
+				}
+				else
+				{
+					std::get<0>(*srvsrc_) = nullptr;
+				}
+				*srv_ = checked_cast<D3D11ShaderResourceView&>(*srv).RetrieveD3DShaderResourceView();
 			}
 			else
 			{
-				get<0>(*srvsrc_) = nullptr;
+				std::get<0>(*srvsrc_) = nullptr;
+				*srv_ = nullptr;
 			}
 		}
 
 	private:
-		tuple<void*, uint32_t, uint32_t>* srvsrc_;
-		ID3D11ShaderResourceViewPtr* srv_;
-		RenderEffectParameterPtr param_;
+		std::tuple<void*, uint32_t, uint32_t>* srvsrc_;
+		ID3D11ShaderResourceView** srv_;
+		RenderEffectParameter* param_;
 	};
 
-	class SetD3D11ShaderParameterGraphicsBufferSRV
+	class SetD3D11ShaderParameterGraphicsBufferSRV final
 	{
 	public:
-		SetD3D11ShaderParameterGraphicsBufferSRV(tuple<void*, uint32_t, uint32_t>& srvsrc, ID3D11ShaderResourceViewPtr& srv, RenderEffectParameterPtr const & param)
+		SetD3D11ShaderParameterGraphicsBufferSRV(std::tuple<void*, uint32_t, uint32_t>& srvsrc,
+				ID3D11ShaderResourceView*& srv, RenderEffectParameter* param)
 			: srvsrc_(&srvsrc), srv_(&srv), param_(param)
 		{
 		}
 
 		void operator()()
 		{
-			GraphicsBufferPtr buf;
-			param_->Value(buf);
-			if (buf)
+			ShaderResourceViewPtr srv;
+			param_->Value(srv);
+			if (srv)
 			{
-				*srvsrc_ = make_tuple(buf.get(), 0, 1);
-				*srv_ = checked_cast<D3D11GraphicsBuffer*>(buf.get())->D3DShaderResourceView();
+				if (srv->BufferResource())
+				{
+					*srvsrc_ = std::make_tuple(srv->BufferResource().get(), 0, 1);
+				}
+				else
+				{
+					std::get<0>(*srvsrc_) = nullptr;
+				}
+				*srv_ = checked_cast<D3D11ShaderResourceView&>(*srv).RetrieveD3DShaderResourceView();
 			}
 			else
 			{
-				get<0>(*srvsrc_) = nullptr;
+				std::get<0>(*srvsrc_) = nullptr;
+				*srv_ = nullptr;
 			}
 		}
 
 	private:
-		tuple<void*, uint32_t, uint32_t>* srvsrc_;
-		ID3D11ShaderResourceViewPtr* srv_;
-		RenderEffectParameterPtr param_;
+		std::tuple<void*, uint32_t, uint32_t>* srvsrc_;
+		ID3D11ShaderResourceView** srv_;
+		RenderEffectParameter* param_;
 	};
 
-	class SetD3D11ShaderParameterTextureUAV
+	class SetD3D11ShaderParameterTextureUAV final
 	{
 	public:
-		SetD3D11ShaderParameterTextureUAV(void*& uavsrc, ID3D11UnorderedAccessViewPtr& uav, RenderEffectParameterPtr const & param)
-			: uavsrc_(&uavsrc), uav_(&uav), param_(param)
+		SetD3D11ShaderParameterTextureUAV(
+			void*& uavsrc, ID3D11UnorderedAccessView*& uav, uint32_t& uav_init_count, RenderEffectParameter* param)
+			: uavsrc_(&uavsrc), uav_(&uav), uav_init_count_(&uav_init_count), param_(param)
 		{
 		}
 
 		void operator()()
 		{
-			TextureSubresource tex_subres;
-			param_->Value(tex_subres);
-			if (tex_subres.tex)
+			UnorderedAccessViewPtr uav;
+			param_->Value(uav);
+			if (uav)
 			{
-				*uavsrc_ = tex_subres.tex.get();
-				*uav_ = checked_cast<D3D11Texture*>(tex_subres.tex.get())->RetriveD3DUnorderedAccessView(
-					tex_subres.first_array_index, tex_subres.num_items, tex_subres.first_level);
+				*uavsrc_ = uav->TextureResource().get();
+				auto& d3d11_uav = checked_cast<D3D11UnorderedAccessView&>(*uav);
+				*uav_ = d3d11_uav.RetrieveD3DUnorderedAccessView();
+				*uav_init_count_ = d3d11_uav.InitCount();
 			}
 			else
 			{
 				*uavsrc_ = nullptr;
+				*uav_ = nullptr;
+				*uav_init_count_ = 0;
 			}
 		}
 
 	private:
 		void** uavsrc_;
-		ID3D11UnorderedAccessViewPtr* uav_;
-		RenderEffectParameterPtr param_;
+		ID3D11UnorderedAccessView** uav_;
+		uint32_t* uav_init_count_;
+		RenderEffectParameter* param_;
 	};
 
-	class SetD3D11ShaderParameterGraphicsBufferUAV
+	class SetD3D11ShaderParameterGraphicsBufferUAV final
 	{
 	public:
-		SetD3D11ShaderParameterGraphicsBufferUAV(void*& uavsrc, ID3D11UnorderedAccessViewPtr& uav, RenderEffectParameterPtr const & param)
-			: uavsrc_(&uavsrc), uav_(&uav), param_(param)
+		SetD3D11ShaderParameterGraphicsBufferUAV(
+			void*& uavsrc, ID3D11UnorderedAccessView*& uav, uint32_t& uav_init_count, RenderEffectParameter* param)
+			: uavsrc_(&uavsrc), uav_(&uav), uav_init_count_(&uav_init_count), param_(param)
 		{
 		}
 
 		void operator()()
 		{
-			GraphicsBufferPtr buf;
-			param_->Value(buf);
-			if (buf)
+			UnorderedAccessViewPtr uav;
+			param_->Value(uav);
+			if (uav)
 			{
-				*uavsrc_ = buf.get();
-				*uav_ = checked_cast<D3D11GraphicsBuffer*>(buf.get())->D3DUnorderedAccessView();
+				*uavsrc_ = uav->BufferResource().get();
+				auto& d3d11_uav = checked_cast<D3D11UnorderedAccessView&>(*uav);
+				*uav_ = d3d11_uav.RetrieveD3DUnorderedAccessView();
+				*uav_init_count_ = d3d11_uav.InitCount();
 			}
 			else
 			{
 				*uavsrc_ = nullptr;
+				*uav_ = nullptr;
+				*uav_init_count_ = 0;
 			}
 		}
 
 	private:
 		void** uavsrc_;
-		ID3D11UnorderedAccessViewPtr* uav_;
-		RenderEffectParameterPtr param_;
+		ID3D11UnorderedAccessView** uav_;
+		uint32_t* uav_init_count_;
+		RenderEffectParameter* param_;
 	};
 }
 
 namespace KlayGE
 {
-	D3D11ShaderObject::D3D11ShaderObject()
+	D3D11ShaderStageObject::D3D11ShaderStageObject(ShaderStage stage) : ShaderStageObject(stage)
 	{
-		has_discard_ = true;
-		has_tessellation_ = false;
-		is_shader_validate_.fill(true);
 	}
 
-	std::string D3D11ShaderObject::GenShaderText(ShaderType type, RenderEffect const & effect,
-		RenderTechnique const & tech, RenderPass const & pass) const
+	void D3D11ShaderStageObject::StreamIn(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids, ResIdentifier& res)
 	{
-		std::stringstream ss;
+		uint32_t native_shader_block_len;
+		res.read(&native_shader_block_len, sizeof(native_shader_block_len));
+		native_shader_block_len = LE2Native(native_shader_block_len);
 
-		for (uint32_t i = 0; i < effect.NumMacros(); ++ i)
+		is_validate_ = false;
+		std::string_view const shader_profile = this->GetShaderProfile(effect, shader_desc_ids[static_cast<uint32_t>(stage_)]);
+		if (native_shader_block_len >= 25 + shader_profile.size())
 		{
-			std::pair<std::string, std::string> const & name_value = effect.MacroByIndex(i);
-			ss << "#define " << name_value.first << " " << name_value.second << std::endl;
-		}
-		ss << std::endl;
-
-		for (uint32_t i = 0; i < tech.NumMacros(); ++ i)
-		{
-			std::pair<std::string, std::string> const & name_value = tech.MacroByIndex(i);
-			ss << "#define " << name_value.first << " " << name_value.second << std::endl;
-		}
-		ss << std::endl;
-
-		for (uint32_t i = 0; i < pass.NumMacros(); ++ i)
-		{
-			std::pair<std::string, std::string> const & name_value = pass.MacroByIndex(i);
-			ss << "#define " << name_value.first << " " << name_value.second << std::endl;
-		}
-		ss << std::endl;
-
-		for (uint32_t i = 0; i < effect.NumCBuffers(); ++ i)
-		{
-			RenderEffectConstantBufferPtr const & cbuff = effect.CBufferByIndex(i);
-			ss << "cbuffer " << *cbuff->Name() << std::endl;
-			ss << "{" << std::endl;
-
-			for (uint32_t j = 0; j < cbuff->NumParameters(); ++ j)
-			{
-				RenderEffectParameter& param = *effect.ParameterByIndex(cbuff->ParameterIndex(j));
-				switch (param.Type())
-				{
-				case REDT_texture1D:
-				case REDT_texture2D:
-				case REDT_texture3D:
-				case REDT_textureCUBE:
-				case REDT_texture1DArray:
-				case REDT_texture2DArray:
-				case REDT_texture3DArray:
-				case REDT_textureCUBEArray:
-				case REDT_sampler:
-				case REDT_buffer:
-				case REDT_structured_buffer:
-				case REDT_byte_address_buffer:
-				case REDT_rw_buffer:
-				case REDT_rw_structured_buffer:
-				case REDT_rw_texture1D:
-				case REDT_rw_texture2D:
-				case REDT_rw_texture3D:
-				case REDT_rw_texture1DArray:
-				case REDT_rw_texture2DArray:
-				case REDT_rw_byte_address_buffer:
-				case REDT_append_structured_buffer:
-				case REDT_consume_structured_buffer:
-					break;
-
-				default:
-					ss << effect.TypeName(param.Type()) << " " << *param.Name();
-					if (param.ArraySize())
-					{
-						ss << "[" << *param.ArraySize() << "]";
-					}
-					ss << ";" << std::endl;
-					break;
-				}
-			}
-
-			ss << "};" << std::endl;
-		}
-
-		RenderDeviceCaps const & caps = Context::Instance().RenderFactoryInstance().RenderEngineInstance().DeviceCaps();
-		for (uint32_t i = 0; i < effect.NumParameters(); ++ i)
-		{
-			RenderEffectParameter& param = *effect.ParameterByIndex(i);
-
-			switch (param.Type())
-			{
-			case REDT_texture1D:
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "Texture1D<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_texture2D:
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "Texture2D<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_texture3D:
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "Texture3D<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_textureCUBE:
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "TextureCube<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_texture1DArray:
-				if (caps.max_shader_model >= 4)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "Texture1DArray<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_texture2DArray:
-				if (caps.max_shader_model >= 4)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "Texture2DArray<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_textureCUBEArray:
-				if (caps.max_shader_model >= 4)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "TextureCubeArray<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_buffer:
-				if (caps.max_shader_model >= 4)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "Buffer<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_sampler:
-				ss << "sampler " << *param.Name() << ";" << std::endl;
-				break;
-
-			case REDT_structured_buffer:
-				if (caps.max_shader_model >= 4)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "StructuredBuffer<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_byte_address_buffer:
-				if (caps.max_shader_model >= 4)
-				{
-					ss << "ByteAddressBuffer " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_buffer:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWBuffer<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_structured_buffer:
-				if (caps.max_shader_model >= 4)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWStructuredBuffer<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_texture1D:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWTexture1D<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_texture2D:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWTexture2D<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_texture3D:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWTexture3D<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-			case REDT_rw_texture1DArray:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWTexture1DArray<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_texture2DArray:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "RWTexture2DArray<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_rw_byte_address_buffer:
-				if (caps.max_shader_model >= 4)
-				{
-					ss << "RWByteAddressBuffer " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_append_structured_buffer:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "AppendStructuredBuffer<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			case REDT_consume_structured_buffer:
-				if (caps.max_shader_model >= 5)
-				{
-					std::string elem_type;
-					param.Var()->Value(elem_type);
-					ss << "ConsumeStructuredBuffer<" << elem_type << "> " << *param.Name() << ";" << std::endl;
-				}
-				break;
-
-			default:
-				break;
-			}
-		}
-
-		for (uint32_t i = 0; i < effect.NumShaders(); ++ i)
-		{
-			RenderShaderFunc const & effect_shader = effect.ShaderByIndex(i);
-			ShaderType shader_type = effect_shader.Type();
-			if ((ST_NumShaderTypes == shader_type) || (type == shader_type))
-			{
-				if (caps.max_shader_model >= effect_shader.Version())
-				{
-					ss << effect_shader.str() << std::endl;
-				}
-			}
-		}
-
-		return ss.str();
-	}
-
-	std::string D3D11ShaderObject::GetShaderProfile(ShaderType type, RenderEffect const & effect, uint32_t shader_desc_id)
-	{
-		ShaderDesc const & sd = effect.GetShaderDesc(shader_desc_id);
-		D3D11RenderEngine const & render_eng = *checked_cast<D3D11RenderEngine const *>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		RenderDeviceCaps const & caps = render_eng.DeviceCaps();
-		std::string shader_profile = sd.profile;
-		size_t const shader_profile_hash = RT_HASH(shader_profile.c_str());
-		switch (type)
-		{
-		case ST_VertexShader:
-			if (CT_HASH("auto") == shader_profile_hash)
-			{
-				shader_profile = render_eng.VertexShaderProfile();
-			}
-			break;
-
-		case ST_PixelShader:
-			if (CT_HASH("auto") == shader_profile_hash)
-			{
-				shader_profile = render_eng.PixelShaderProfile();
-			}
-			break;
-
-		case ST_GeometryShader:
-			if (caps.max_shader_model >= 4)
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.GeometryShaderProfile();
-				}
-			}
-			break;
-
-		case ST_ComputeShader:
-			if (caps.max_shader_model >= 4)
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.ComputeShaderProfile();
-				}
-			}
-			break;
-
-		case ST_HullShader:
-			if (caps.max_shader_model >= 5)
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.HullShaderProfile();
-				}
-			}
-			break;
-
-		case ST_DomainShader:
-			if (caps.max_shader_model >= 5)
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.DomainShaderProfile();
-				}
-			}
-			break;
-
-		default:
-			break;
-		}
-
-		return shader_profile;
-	}
-
-	bool D3D11ShaderObject::AttachNativeShader(ShaderType type, RenderEffect const & effect, std::vector<uint32_t> const & shader_desc_ids,
-		std::vector<uint8_t> const & native_shader_block)
-	{
-		bool ret = false;
-
-		is_shader_validate_[type] = false;
-		std::string shader_profile = this->GetShaderProfile(type, effect, shader_desc_ids[type]);
-		if (native_shader_block.size() >= 25 + shader_profile.size())
-		{
-			uint8_t const * nsbp = &native_shader_block[0];
-
-			uint8_t len = *nsbp;
-			++ nsbp;
-			std::string profile;
+			uint8_t len;
+			res.read(reinterpret_cast<char*>(&len), sizeof(len));
+			std::string& profile = shader_profile_;
 			profile.resize(len);
-			std::memcpy(&profile[0], nsbp, len);
-			nsbp += len;
+			res.read(&profile[0], len);
 			if (profile == shader_profile)
 			{
-				is_shader_validate_[type] = true;
+				is_validate_ = true;
 
 				uint32_t blob_size;
-				std::memcpy(&blob_size, nsbp, sizeof(blob_size));
-				nsbp += sizeof(blob_size);
-				shared_ptr<std::vector<uint8_t> > code_blob = MakeSharedPtr<std::vector<uint8_t> >(blob_size);
+				res.read(reinterpret_cast<char*>(&blob_size), sizeof(blob_size));
+				shader_code_.resize(blob_size);
 
-				std::memcpy(&((*code_blob)[0]), nsbp, blob_size);
-				nsbp += blob_size;
-
-				D3D11ShaderDesc& sd = shader_desc_[type];
+				res.read(reinterpret_cast<char*>(shader_code_.data()), blob_size);
 
 				uint16_t cb_desc_size;
-				std::memcpy(&cb_desc_size, nsbp, sizeof(cb_desc_size));
-				nsbp += sizeof(cb_desc_size);
+				res.read(reinterpret_cast<char*>(&cb_desc_size), sizeof(cb_desc_size));
 				cb_desc_size = LE2Native(cb_desc_size);
-				sd.cb_desc.resize(cb_desc_size);
-				for (size_t i = 0; i < sd.cb_desc.size(); ++ i)
+				shader_desc_.cb_desc.resize(cb_desc_size);
+				for (size_t i = 0; i < shader_desc_.cb_desc.size(); ++i)
 				{
-					len = *nsbp;
-					++ nsbp;
-					sd.cb_desc[i].name.resize(len);
-					std::memcpy(&sd.cb_desc[i].name[0], nsbp, len);
-					nsbp += len;
+					res.read(reinterpret_cast<char*>(&len), sizeof(len));
+					shader_desc_.cb_desc[i].name.resize(len);
+					res.read(&shader_desc_.cb_desc[i].name[0], len);
 
-					sd.cb_desc[i].name_hash = RT_HASH(sd.cb_desc[i].name.c_str());
+					shader_desc_.cb_desc[i].name_hash = RT_HASH(shader_desc_.cb_desc[i].name.c_str());
 
-					std::memcpy(&sd.cb_desc[i].size, nsbp, sizeof(sd.cb_desc[i].size));
-					nsbp += sizeof(sd.cb_desc[i].size);
-					sd.cb_desc[i].size = LE2Native(sd.cb_desc[i].size);
+					res.read(reinterpret_cast<char*>(&shader_desc_.cb_desc[i].size), sizeof(shader_desc_.cb_desc[i].size));
+					shader_desc_.cb_desc[i].size = LE2Native(shader_desc_.cb_desc[i].size);
 
 					uint16_t var_desc_size;
-					std::memcpy(&var_desc_size, nsbp, sizeof(var_desc_size));
-					nsbp += sizeof(var_desc_size);
+					res.read(reinterpret_cast<char*>(&var_desc_size), sizeof(var_desc_size));
 					var_desc_size = LE2Native(var_desc_size);
-					sd.cb_desc[i].var_desc.resize(var_desc_size);
-					for (size_t j = 0; j < sd.cb_desc[i].var_desc.size(); ++ j)
+					shader_desc_.cb_desc[i].var_desc.resize(var_desc_size);
+					for (size_t j = 0; j < shader_desc_.cb_desc[i].var_desc.size(); ++j)
 					{
-						len = *nsbp;
-						++ nsbp;
-						sd.cb_desc[i].var_desc[j].name.resize(len);
-						std::memcpy(&sd.cb_desc[i].var_desc[j].name[0], nsbp, len);
-						nsbp += len;
+						res.read(reinterpret_cast<char*>(&len), sizeof(len));
+						shader_desc_.cb_desc[i].var_desc[j].name.resize(len);
+						res.read(&shader_desc_.cb_desc[i].var_desc[j].name[0], len);
 
-						std::memcpy(&sd.cb_desc[i].var_desc[j].start_offset, nsbp, sizeof(sd.cb_desc[i].var_desc[j].start_offset));
-						nsbp += sizeof(sd.cb_desc[i].var_desc[j].start_offset);
-						sd.cb_desc[i].var_desc[j].start_offset = LE2Native(sd.cb_desc[i].var_desc[j].start_offset);
-						std::memcpy(&sd.cb_desc[i].var_desc[j].type, nsbp, sizeof(sd.cb_desc[i].var_desc[j].type));
-						nsbp += sizeof(sd.cb_desc[i].var_desc[j].type);
-						std::memcpy(&sd.cb_desc[i].var_desc[j].rows, nsbp, sizeof(sd.cb_desc[i].var_desc[j].rows));
-						nsbp += sizeof(sd.cb_desc[i].var_desc[j].rows);
-						std::memcpy(&sd.cb_desc[i].var_desc[j].columns, nsbp, sizeof(sd.cb_desc[i].var_desc[j].columns));
-						nsbp += sizeof(sd.cb_desc[i].var_desc[j].columns);
-						std::memcpy(&sd.cb_desc[i].var_desc[j].elements, nsbp, sizeof(sd.cb_desc[i].var_desc[j].elements));
-						nsbp += sizeof(sd.cb_desc[i].var_desc[j].elements);
-						sd.cb_desc[i].var_desc[j].elements = LE2Native(sd.cb_desc[i].var_desc[j].elements);
+						res.read(reinterpret_cast<char*>(&shader_desc_.cb_desc[i].var_desc[j].start_offset),
+							sizeof(shader_desc_.cb_desc[i].var_desc[j].start_offset));
+						shader_desc_.cb_desc[i].var_desc[j].start_offset = LE2Native(shader_desc_.cb_desc[i].var_desc[j].start_offset);
+						res.read(reinterpret_cast<char*>(&shader_desc_.cb_desc[i].var_desc[j].type),
+							sizeof(shader_desc_.cb_desc[i].var_desc[j].type));
+						res.read(reinterpret_cast<char*>(&shader_desc_.cb_desc[i].var_desc[j].rows),
+							sizeof(shader_desc_.cb_desc[i].var_desc[j].rows));
+						res.read(reinterpret_cast<char*>(&shader_desc_.cb_desc[i].var_desc[j].columns),
+							sizeof(shader_desc_.cb_desc[i].var_desc[j].columns));
+						res.read(reinterpret_cast<char*>(&shader_desc_.cb_desc[i].var_desc[j].elements),
+							sizeof(shader_desc_.cb_desc[i].var_desc[j].elements));
+						shader_desc_.cb_desc[i].var_desc[j].elements = LE2Native(shader_desc_.cb_desc[i].var_desc[j].elements);
 					}
 				}
 
-				std::memcpy(&sd.num_samplers, nsbp, sizeof(sd.num_samplers));
-				nsbp += sizeof(sd.num_samplers);
-				sd.num_samplers = LE2Native(sd.num_samplers);
-				std::memcpy(&sd.num_srvs, nsbp, sizeof(sd.num_srvs));
-				nsbp += sizeof(sd.num_srvs);
-				sd.num_srvs = LE2Native(sd.num_srvs);
-				std::memcpy(&sd.num_uavs, nsbp, sizeof(sd.num_uavs));
-				nsbp += sizeof(sd.num_uavs);
-				sd.num_uavs = LE2Native(sd.num_uavs);
+				res.read(reinterpret_cast<char*>(&shader_desc_.num_samplers), sizeof(shader_desc_.num_samplers));
+				shader_desc_.num_samplers = LE2Native(shader_desc_.num_samplers);
+				res.read(reinterpret_cast<char*>(&shader_desc_.num_srvs), sizeof(shader_desc_.num_srvs));
+				shader_desc_.num_srvs = LE2Native(shader_desc_.num_srvs);
+				res.read(reinterpret_cast<char*>(&shader_desc_.num_uavs), sizeof(shader_desc_.num_uavs));
+				shader_desc_.num_uavs = LE2Native(shader_desc_.num_uavs);
 
 				uint16_t res_desc_size;
-				std::memcpy(&res_desc_size, nsbp, sizeof(res_desc_size));
-				nsbp += sizeof(res_desc_size);
+				res.read(reinterpret_cast<char*>(&res_desc_size), sizeof(res_desc_size));
 				res_desc_size = LE2Native(res_desc_size);
-				sd.res_desc.resize(res_desc_size);
-				for (size_t i = 0; i < sd.res_desc.size(); ++ i)
+				shader_desc_.res_desc.resize(res_desc_size);
+				for (size_t i = 0; i < shader_desc_.res_desc.size(); ++i)
 				{
-					len = *nsbp;
-					++ nsbp;
-					sd.res_desc[i].name.resize(len);
-					std::memcpy(&sd.res_desc[i].name[0], nsbp, len);
-					nsbp += len;
+					res.read(reinterpret_cast<char*>(&len), sizeof(len));
+					shader_desc_.res_desc[i].name.resize(len);
+					res.read(&shader_desc_.res_desc[i].name[0], len);
 
-					std::memcpy(&sd.res_desc[i].type, nsbp, sizeof(sd.res_desc[i].type));
-					nsbp += sizeof(sd.res_desc[i].type);
+					res.read(reinterpret_cast<char*>(&shader_desc_.res_desc[i].type), sizeof(shader_desc_.res_desc[i].type));
 
-					std::memcpy(&sd.res_desc[i].dimension, nsbp, sizeof(sd.res_desc[i].dimension));
-					nsbp += sizeof(sd.res_desc[i].dimension);
+					res.read(reinterpret_cast<char*>(&shader_desc_.res_desc[i].dimension), sizeof(shader_desc_.res_desc[i].dimension));
 
-					std::memcpy(&sd.res_desc[i].bind_point, nsbp, sizeof(sd.res_desc[i].bind_point));
-					nsbp += sizeof(sd.res_desc[i].bind_point);
-					sd.res_desc[i].bind_point = LE2Native(sd.res_desc[i].bind_point);
+					res.read(reinterpret_cast<char*>(&shader_desc_.res_desc[i].bind_point), sizeof(shader_desc_.res_desc[i].bind_point));
+					shader_desc_.res_desc[i].bind_point = LE2Native(shader_desc_.res_desc[i].bind_point);
 				}
 
-				if (ST_VertexShader == type)
-				{
-					std::memcpy(&vs_signature_, nsbp, sizeof(vs_signature_));
-					nsbp += sizeof(vs_signature_);
-					vs_signature_ = LE2Native(vs_signature_);
-				}
-				else if (ST_ComputeShader == type)
-				{
-					std::memcpy(&cs_block_size_x_, nsbp, sizeof(cs_block_size_x_));
-					nsbp += sizeof(cs_block_size_x_);
-					cs_block_size_x_ = LE2Native(cs_block_size_x_);
+				this->FillCBufferIndices(effect);
 
-					std::memcpy(&cs_block_size_y_, nsbp, sizeof(cs_block_size_y_));
-					nsbp += sizeof(cs_block_size_y_);
-					cs_block_size_y_ = LE2Native(cs_block_size_y_);
-
-					std::memcpy(&cs_block_size_z_, nsbp, sizeof(cs_block_size_z_));
-					nsbp += sizeof(cs_block_size_z_);
-					cs_block_size_z_ = LE2Native(cs_block_size_z_);
-				}
-
-				this->AttachShaderBytecode(type, effect, shader_desc_ids, code_blob);
-
-				ret = is_shader_validate_[type];
+				this->StageSpecificStreamIn(res);
 			}
 		}
-
-		return ret;
+		else
+		{
+			std::vector<char> native_shader_block(native_shader_block_len);
+			res.read(reinterpret_cast<char*>(native_shader_block.data()), native_shader_block_len);
+		}
 	}
 
-	bool D3D11ShaderObject::StreamIn(ResIdentifierPtr const & res, ShaderType type, RenderEffect const & effect,
-		std::vector<uint32_t> const & shader_desc_ids)
+	void D3D11ShaderStageObject::StreamOut(std::ostream& os)
 	{
-		uint32_t len;
-		res->read(&len, sizeof(len));
-		len = LE2Native(len);
-		std::vector<uint8_t> native_shader_block(len);
-		if (len > 0)
+		std::vector<char> native_shader_block;
+		VectorOutputStreamBuf native_shader_buff(native_shader_block);
+		std::ostream oss(&native_shader_buff);
+
 		{
-			res->read(&native_shader_block[0], len * sizeof(native_shader_block[0]));
+			uint8_t len = static_cast<uint8_t>(shader_profile_.size());
+			oss.write(reinterpret_cast<char const*>(&len), sizeof(len));
+			oss.write(reinterpret_cast<char const*>(shader_profile_.data()), len);
 		}
 
-		return this->AttachNativeShader(type, effect, shader_desc_ids, native_shader_block);
-	}
-
-	void D3D11ShaderObject::StreamOut(std::ostream& os, ShaderType type)
-	{
-		std::vector<uint8_t> native_shader_block;
-
-		shared_ptr<std::vector<uint8_t> > code_blob = shader_code_[type].first;
-		if (code_blob)
+		if (!shader_code_.empty())
 		{
-			std::ostringstream oss(std::ios_base::binary | std::ios_base::out);
+			uint8_t len;
 
-			uint8_t len = static_cast<uint8_t>(shader_code_[type].second.size());
-			oss.write(reinterpret_cast<char const *>(&len), sizeof(len));
-			oss.write(reinterpret_cast<char const *>(&shader_code_[type].second[0]), len);
+			uint32_t blob_size = Native2LE(static_cast<uint32_t>(shader_code_.size()));
+			oss.write(reinterpret_cast<char const*>(&blob_size), sizeof(blob_size));
+			oss.write(reinterpret_cast<char const*>(shader_code_.data()), shader_code_.size());
 
-			uint32_t blob_size = Native2LE(static_cast<uint32_t>(code_blob->size()));
-			oss.write(reinterpret_cast<char const *>(&blob_size), sizeof(blob_size));
-			oss.write(reinterpret_cast<char const *>(&((*code_blob)[0])), code_blob->size());
-
-			D3D11ShaderDesc const & sd = shader_desc_[type];
-
-			uint16_t cb_desc_size = Native2LE(static_cast<uint16_t>(sd.cb_desc.size()));
-			oss.write(reinterpret_cast<char const *>(&cb_desc_size), sizeof(cb_desc_size));
-			for (size_t i = 0; i < sd.cb_desc.size(); ++ i)
+			uint16_t cb_desc_size = Native2LE(static_cast<uint16_t>(shader_desc_.cb_desc.size()));
+			oss.write(reinterpret_cast<char const*>(&cb_desc_size), sizeof(cb_desc_size));
+			for (size_t i = 0; i < shader_desc_.cb_desc.size(); ++i)
 			{
-				len = static_cast<uint8_t>(sd.cb_desc[i].name.size());
-				oss.write(reinterpret_cast<char const *>(&len), sizeof(len));
-				oss.write(reinterpret_cast<char const *>(&sd.cb_desc[i].name[0]), len);
+				len = static_cast<uint8_t>(shader_desc_.cb_desc[i].name.size());
+				oss.write(reinterpret_cast<char const*>(&len), sizeof(len));
+				oss.write(reinterpret_cast<char const*>(&shader_desc_.cb_desc[i].name[0]), len);
 
-				uint32_t size = Native2LE(sd.cb_desc[i].size);
-				oss.write(reinterpret_cast<char const *>(&size), sizeof(size));
+				uint32_t size = Native2LE(shader_desc_.cb_desc[i].size);
+				oss.write(reinterpret_cast<char const*>(&size), sizeof(size));
 
-				uint16_t var_desc_size = Native2LE(static_cast<uint16_t>(sd.cb_desc[i].var_desc.size()));
-				oss.write(reinterpret_cast<char const *>(&var_desc_size), sizeof(var_desc_size));
-				for (size_t j = 0; j < sd.cb_desc[i].var_desc.size(); ++ j)
+				uint16_t var_desc_size = Native2LE(static_cast<uint16_t>(shader_desc_.cb_desc[i].var_desc.size()));
+				oss.write(reinterpret_cast<char const*>(&var_desc_size), sizeof(var_desc_size));
+				for (size_t j = 0; j < shader_desc_.cb_desc[i].var_desc.size(); ++j)
 				{
-					len = static_cast<uint8_t>(sd.cb_desc[i].var_desc[j].name.size());
-					oss.write(reinterpret_cast<char const *>(&len), sizeof(len));
-					oss.write(reinterpret_cast<char const *>(&sd.cb_desc[i].var_desc[j].name[0]), len);
+					len = static_cast<uint8_t>(shader_desc_.cb_desc[i].var_desc[j].name.size());
+					oss.write(reinterpret_cast<char const*>(&len), sizeof(len));
+					oss.write(reinterpret_cast<char const*>(&shader_desc_.cb_desc[i].var_desc[j].name[0]), len);
 
-					uint32_t start_offset = Native2LE(sd.cb_desc[i].var_desc[j].start_offset);
-					oss.write(reinterpret_cast<char const *>(&start_offset), sizeof(start_offset));
-					oss.write(reinterpret_cast<char const *>(&sd.cb_desc[i].var_desc[j].type), sizeof(sd.cb_desc[i].var_desc[j].type));
-					oss.write(reinterpret_cast<char const *>(&sd.cb_desc[i].var_desc[j].rows), sizeof(sd.cb_desc[i].var_desc[j].rows));
-					oss.write(reinterpret_cast<char const *>(&sd.cb_desc[i].var_desc[j].columns), sizeof(sd.cb_desc[i].var_desc[j].columns));
-					uint16_t elements = Native2LE(sd.cb_desc[i].var_desc[j].elements);
-					oss.write(reinterpret_cast<char const *>(&elements), sizeof(elements));
+					uint32_t start_offset = Native2LE(shader_desc_.cb_desc[i].var_desc[j].start_offset);
+					oss.write(reinterpret_cast<char const*>(&start_offset), sizeof(start_offset));
+					oss.write(reinterpret_cast<char const*>(&shader_desc_.cb_desc[i].var_desc[j].type),
+						sizeof(shader_desc_.cb_desc[i].var_desc[j].type));
+					oss.write(reinterpret_cast<char const*>(&shader_desc_.cb_desc[i].var_desc[j].rows),
+						sizeof(shader_desc_.cb_desc[i].var_desc[j].rows));
+					oss.write(reinterpret_cast<char const*>(&shader_desc_.cb_desc[i].var_desc[j].columns),
+						sizeof(shader_desc_.cb_desc[i].var_desc[j].columns));
+					uint16_t elements = Native2LE(shader_desc_.cb_desc[i].var_desc[j].elements);
+					oss.write(reinterpret_cast<char const*>(&elements), sizeof(elements));
 				}
 			}
 
-			uint16_t num_samplers = Native2LE(sd.num_samplers);
-			oss.write(reinterpret_cast<char const *>(&num_samplers), sizeof(num_samplers));
-			uint16_t num_srvs = Native2LE(sd.num_srvs);
-			oss.write(reinterpret_cast<char const *>(&num_srvs), sizeof(num_srvs));
-			uint16_t num_uavs = Native2LE(sd.num_uavs);
-			oss.write(reinterpret_cast<char const *>(&num_uavs), sizeof(num_uavs));
+			uint16_t num_samplers = Native2LE(shader_desc_.num_samplers);
+			oss.write(reinterpret_cast<char const*>(&num_samplers), sizeof(num_samplers));
+			uint16_t num_srvs = Native2LE(shader_desc_.num_srvs);
+			oss.write(reinterpret_cast<char const*>(&num_srvs), sizeof(num_srvs));
+			uint16_t num_uavs = Native2LE(shader_desc_.num_uavs);
+			oss.write(reinterpret_cast<char const*>(&num_uavs), sizeof(num_uavs));
 
-			uint16_t res_desc_size = Native2LE(static_cast<uint16_t>(sd.res_desc.size()));
-			oss.write(reinterpret_cast<char const *>(&res_desc_size), sizeof(res_desc_size));
-			for (size_t i = 0; i < sd.res_desc.size(); ++ i)
+			uint16_t res_desc_size = Native2LE(static_cast<uint16_t>(shader_desc_.res_desc.size()));
+			oss.write(reinterpret_cast<char const*>(&res_desc_size), sizeof(res_desc_size));
+			for (size_t i = 0; i < shader_desc_.res_desc.size(); ++i)
 			{
-				len = static_cast<uint8_t>(sd.res_desc[i].name.size());
-				oss.write(reinterpret_cast<char const *>(&len), sizeof(len));
-				oss.write(reinterpret_cast<char const *>(&sd.res_desc[i].name[0]), len);
+				len = static_cast<uint8_t>(shader_desc_.res_desc[i].name.size());
+				oss.write(reinterpret_cast<char const*>(&len), sizeof(len));
+				oss.write(reinterpret_cast<char const*>(&shader_desc_.res_desc[i].name[0]), len);
 
-				oss.write(reinterpret_cast<char const *>(&sd.res_desc[i].type), sizeof(sd.res_desc[i].type));
-				oss.write(reinterpret_cast<char const *>(&sd.res_desc[i].dimension), sizeof(sd.res_desc[i].dimension));
-				uint16_t bind_point = Native2LE(sd.res_desc[i].bind_point);
-				oss.write(reinterpret_cast<char const *>(&bind_point), sizeof(bind_point));
+				oss.write(reinterpret_cast<char const*>(&shader_desc_.res_desc[i].type), sizeof(shader_desc_.res_desc[i].type));
+				oss.write(reinterpret_cast<char const*>(&shader_desc_.res_desc[i].dimension), sizeof(shader_desc_.res_desc[i].dimension));
+				uint16_t bind_point = Native2LE(shader_desc_.res_desc[i].bind_point);
+				oss.write(reinterpret_cast<char const*>(&bind_point), sizeof(bind_point));
 			}
 
-			if (ST_VertexShader == type)
-			{
-				uint32_t vs_signature = Native2LE(vs_signature_);
-				oss.write(reinterpret_cast<char const *>(&vs_signature), sizeof(vs_signature));
-			}
-			else if (ST_ComputeShader == type)
-			{
-				uint32_t cs_block_size_x = Native2LE(cs_block_size_x_);
-				oss.write(reinterpret_cast<char const *>(&cs_block_size_x), sizeof(cs_block_size_x));
-
-				uint32_t cs_block_size_y = Native2LE(cs_block_size_y_);
-				oss.write(reinterpret_cast<char const *>(&cs_block_size_y), sizeof(cs_block_size_y));
-
-				uint32_t cs_block_size_z = Native2LE(cs_block_size_z_);
-				oss.write(reinterpret_cast<char const *>(&cs_block_size_z), sizeof(cs_block_size_z));
-			}
-
-			std::string out_str = oss.str();
-			native_shader_block.resize(out_str.size());
-			std::memcpy(&native_shader_block[0], &out_str[0], out_str.size());
+			this->StageSpecificStreamOut(oss);
 		}
 
 		uint32_t len = static_cast<uint32_t>(native_shader_block.size());
 		{
 			uint32_t tmp = Native2LE(len);
-			os.write(reinterpret_cast<char const *>(&tmp), sizeof(tmp));
+			os.write(reinterpret_cast<char const*>(&tmp), sizeof(tmp));
 		}
 		if (len > 0)
 		{
-			os.write(reinterpret_cast<char const *>(&native_shader_block[0]), len * sizeof(native_shader_block[0]));
+			os.write(reinterpret_cast<char const*>(&native_shader_block[0]), len * sizeof(native_shader_block[0]));
 		}
 	}
 
-	shared_ptr<std::vector<uint8_t> > D3D11ShaderObject::CompiteToBytecode(ShaderType type, RenderEffect const & effect,
-			RenderTechnique const & tech, RenderPass const & pass, std::vector<uint32_t> const & shader_desc_ids)
+	void D3D11ShaderStageObject::CompileShader(RenderEffect const& effect, RenderTechnique const& tech, RenderPass const& pass,
+		std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
 	{
+		shader_code_.clear();
+
 #ifdef KLAYGE_PLATFORM_WINDOWS_DESKTOP
-		D3D11RenderEngine const & render_eng = *checked_cast<D3D11RenderEngine const *>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		D3D_FEATURE_LEVEL feature_level = render_eng.DeviceFeatureLevel();
-		RenderDeviceCaps const & caps = render_eng.DeviceCaps();
+		uint32_t const shader_desc_id = shader_desc_ids[static_cast<uint32_t>(stage_)];
 
-		std::string max_sm_str;
+		auto const& sd = effect.GetShaderDesc(shader_desc_id);
+
+		shader_profile_ = std::string(this->GetShaderProfile(effect, shader_desc_id));
+		is_validate_ = !shader_profile_.empty();
+
+		if (is_validate_)
 		{
-			std::stringstream ss;
-			ss << static_cast<int>(caps.max_shader_model);
-			max_sm_str = ss.str();
-		}
-		std::string max_tex_array_str;
-		{
-			std::stringstream ss;
-			ss << caps.max_texture_array_length;
-			max_tex_array_str = ss.str();
-		}
-		std::string max_tex_depth_str;
-		{
-			std::stringstream ss;
-			ss << caps.max_texture_depth;
-			max_tex_depth_str = ss.str();
-		}
-		std::string max_tex_units_str;
-		{
-			std::stringstream ss;
-			ss << static_cast<int>(caps.max_pixel_texture_units);
-			max_tex_units_str = ss.str();
-		}
-		std::string flipping_str;
-		{
-			std::stringstream ss;
-			ss << (render_eng.RequiresFlipping() ? -1 : +1);
-			flipping_str = ss.str();
-		}
-		std::string standard_derivatives_str;
-		{
-			std::stringstream ss;
-			ss << (caps.standard_derivatives_support ? 1 : 0);
-			standard_derivatives_str = ss.str();
-		}
-		std::string no_tex_lod_str;
-		{
-			std::stringstream ss;
-			ss << (ST_PixelShader == type) ? (caps.shader_texture_lod_support ? 0 : 1) : 1;
-			no_tex_lod_str = ss.str();
-		}
+			std::vector<std::pair<char const*, char const*>> macros;
+			macros.emplace_back("KLAYGE_D3D11", "1");
+			macros.emplace_back("KLAYGE_FRAG_DEPTH", "1");
 
-		ShaderDesc const & sd = effect.GetShaderDesc(shader_desc_ids[type]);
-
-		std::string shader_text = this->GenShaderText(static_cast<ShaderType>(type), effect, tech, pass);
-
-		is_shader_validate_[type] = true;
-
-		std::string shader_profile = sd.profile;
-		size_t const shader_profile_hash = RT_HASH(shader_profile.c_str());
-		switch (type)
-		{
-		case ST_VertexShader:
-			if (CT_HASH("auto") == shader_profile_hash)
-			{
-				shader_profile = render_eng.VertexShaderProfile();
-			}
-			break;
-
-		case ST_PixelShader:
-			if (CT_HASH("auto") == shader_profile_hash)
-			{
-				shader_profile = render_eng.PixelShaderProfile();
-			}
-			break;
-
-		case ST_GeometryShader:
-			if (caps.max_shader_model < 4)
-			{
-				is_shader_validate_[type] = false;
-			}
-			else
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.GeometryShaderProfile();
-				}
-			}
-			break;
-
-		case ST_ComputeShader:
-			if (caps.max_shader_model < 4)
-			{
-				is_shader_validate_[type] = false;
-			}
-			else
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.ComputeShaderProfile();
-				}
-				if ((CT_HASH("cs_5_0") == shader_profile_hash) && (caps.max_shader_model < 5))
-				{
-					is_shader_validate_[type] = false;
-				}
-			}
-			break;
-
-		case ST_HullShader:
-			if (caps.max_shader_model < 5)
-			{
-				is_shader_validate_[type] = false;
-			}
-			else
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.HullShaderProfile();
-				}
-			}
-			break;
-
-		case ST_DomainShader:
-			if (caps.max_shader_model < 5)
-			{
-				is_shader_validate_[type] = false;
-			}
-			else
-			{
-				if (CT_HASH("auto") == shader_profile_hash)
-				{
-					shader_profile = render_eng.DomainShaderProfile();
-				}
-			}
-			break;
-
-		default:
-			is_shader_validate_[type] = false;
-			break;
-		}
-		shader_code_[type].second = shader_profile;
-
-		ID3DBlob* code = nullptr;
-		if (is_shader_validate_[type])
-		{
-			ID3DBlob* err_msg;
-			std::vector<D3D_SHADER_MACRO> macros;
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_D3D11", "1" };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_SHADER_MODEL", max_sm_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_MAX_TEX_ARRAY_LEN", max_tex_array_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_MAX_TEX_DEPTH", max_tex_depth_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_MAX_TEX_UNITS", max_tex_units_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_FLIPPING", flipping_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_DERIVATIVES", standard_derivatives_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			{
-				D3D_SHADER_MACRO macro_d3d11 = { "KLAYGE_NO_TEX_LOD", no_tex_lod_str.c_str() };
-				macros.push_back(macro_d3d11);
-			}
-			if (feature_level <= D3D_FEATURE_LEVEL_9_3)
-			{
-				D3D_SHADER_MACRO macro_bc5_as_bc3 = { "KLAYGE_BC5_AS_AG", "1" };
-				macros.push_back(macro_bc5_as_bc3);
-
-				D3D_SHADER_MACRO macro_bc4_as_bc1 = { "KLAYGE_BC4_AS_G", "1" };
-				macros.push_back(macro_bc4_as_bc1);
-			}
-			if (!caps.fp_color_support)
-			{
-				D3D_SHADER_MACRO macro_no_fp_tex = { "KLAYGE_NO_FP_COLOR", "1" };
-				macros.push_back(macro_no_fp_tex);
-			}
-			if (caps.pack_to_rgba_required)
-			{
-				D3D_SHADER_MACRO macro_pack_to_rgba = { "KLAYGE_PACK_TO_RGBA", "1" };
-				macros.push_back(macro_pack_to_rgba);
-			}
-			{
-				D3D_SHADER_MACRO macro_frag_depth = { "KLAYGE_FRAG_DEPTH", "1" };
-				macros.push_back(macro_frag_depth);
-			}
-			{
-				D3D_SHADER_MACRO macro_shader_type = { "", "1" };
-				switch (type)
-				{
-				case ST_VertexShader:
-					macro_shader_type.Name = "KLAYGE_VERTEX_SHADER";
-					break;
-
-				case ST_PixelShader:
-					macro_shader_type.Name = "KLAYGE_PIXEL_SHADER";
-					break;
-
-				case ST_GeometryShader:
-					macro_shader_type.Name = "KLAYGE_GEOMETRY_SHADER";
-					break;
-
-				case ST_ComputeShader:
-					macro_shader_type.Name = "KLAYGE_COMPUTE_SHADER";
-					break;
-
-				case ST_HullShader:
-					macro_shader_type.Name = "KLAYGE_HULL_SHADER";
-					break;
-
-				case ST_DomainShader:
-					macro_shader_type.Name = "KLAYGE_DOMAIN_SHADER";
-					break;
-
-				default:
-					BOOST_ASSERT(false);
-					break;
-				}
-				macros.push_back(macro_shader_type);
-			}
-			{
-				D3D_SHADER_MACRO macro_end = { nullptr, nullptr };
-				macros.push_back(macro_end);
-			}
-			uint32_t flags = 0;
+			uint32_t flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if !defined(KLAYGE_DEBUG)
 			flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
-			render_eng.D3DCompile(shader_text.c_str(), static_cast<UINT>(shader_text.size()), nullptr, &macros[0],
-				nullptr, sd.func_name.c_str(), shader_profile.c_str(),
-				flags, 0, &code, &err_msg);
-			if (err_msg != nullptr)
+			shader_code_ =
+				ShaderStageObject::CompileToDXBC(stage_, effect, tech, pass, macros, sd.func_name.c_str(), shader_profile_.c_str(), flags);
+
+			if (!shader_code_.empty())
 			{
-				LogError("Error when compiling %s:", sd.func_name.c_str());
-
-				std::map<int, std::vector<std::string> > err_lines;
-				{
-					std::istringstream err_iss(static_cast<char*>(err_msg->GetBufferPointer()));
-					std::string err_str;
-					while (err_iss)
-					{
-						std::getline(err_iss, err_str);
-
-						int err_line = -1;
-						std::string::size_type pos = err_str.find("): error X");
-						if (pos == std::string::npos)
-						{
-							pos = err_str.find("): warning X");
-						}
-						if (pos != std::string::npos)
-						{
-							std::string part_err_str = err_str.substr(0, pos);
-							pos = part_err_str.rfind("(");
-							part_err_str = part_err_str.substr(pos + 1);
-							std::istringstream(part_err_str) >> err_line;
-						}
-
-						std::vector<std::string>& msgs = err_lines[err_line];
-						bool found = false;
-						typedef KLAYGE_DECLTYPE(msgs) ErrMsgsType;
-						KLAYGE_FOREACH(ErrMsgsType::const_reference msg, msgs)
-						{
-							if (msg == err_str)
-							{
-								found = true;
-								break;
-							}
-						}
-
-						if (!found)
-						{
-							// To make the error message unrecognized by Visual Studio
-							if ((0 == err_str.find("error X")) || (0 == err_str.find("warning X")))
-							{
-								err_str = "(0): " + err_str;
-							}
-
-							msgs.push_back(err_str);
-						}
-					}
-				}
-
-				for (KLAYGE_AUTO(iter, err_lines.begin()); iter != err_lines.end(); ++ iter)
-				{
-					if (iter->first >= 0)
-					{
-						std::istringstream iss(shader_text);
-						std::string s;
-						int line = 1;
-
-						LogInfo("...");
-						while (iss && ((iter->first - line) >= 3))
-						{
-							std::getline(iss, s);
-							++ line;
-						}
-						while (iss && (abs(line - iter->first) < 3))
-						{
-							std::getline(iss, s);
-							
-							while (!s.empty() && (('\r' == s[s.size() - 1]) || ('\n' == s[s.size() - 1])))
-							{
-								s.resize(s.size() - 1);
-							}
-
-							LogInfo("%d %s", line, s.c_str());
-
-							++ line;
-						}
-						LogInfo("...");
-					}
-
-					typedef KLAYGE_DECLTYPE(iter->second) ErrMsgsType;
-					KLAYGE_FOREACH(ErrMsgsType::const_reference msg, iter->second)
-					{
-						LogError(msg.c_str());
-					}
-				}
-
-				err_msg->Release();
-			}
-
-			if (code)
-			{
-				ID3D11ShaderReflection* reflection;
-				render_eng.D3DReflect(code->GetBufferPointer(), code->GetBufferSize(),
-					IID_ID3D11ShaderReflection_47, reinterpret_cast<void**>(&reflection));
+				com_ptr<ID3D11ShaderReflection> reflection;
+				ShaderStageObject::ReflectDXBC(shader_code_, reflection.put_void());
 				if (reflection != nullptr)
 				{
 					D3D11_SHADER_DESC desc;
 					reflection->GetDesc(&desc);
 
-					for (UINT c = 0; c < desc.ConstantBuffers; ++ c)
+					for (UINT c = 0; c < desc.ConstantBuffers; ++c)
 					{
 						ID3D11ShaderReflectionConstantBuffer* reflection_cb = reflection->GetConstantBufferByIndex(c);
 
@@ -1196,7 +454,7 @@ namespace KlayGE
 							cb_desc.name_hash = RT_HASH(d3d_cb_desc.Name);
 							cb_desc.size = d3d_cb_desc.Size;
 
-							for (UINT v = 0; v < d3d_cb_desc.Variables; ++ v)
+							for (UINT v = 0; v < d3d_cb_desc.Variables; ++v)
 							{
 								ID3D11ShaderReflectionVariable* reflection_var = reflection_cb->GetVariableByIndex(v);
 
@@ -1216,14 +474,16 @@ namespace KlayGE
 								cb_desc.var_desc.push_back(vd);
 							}
 
-							shader_desc_[type].cb_desc.push_back(cb_desc);
+							shader_desc_.cb_desc.push_back(cb_desc);
 						}
 					}
 
-					int num_samplers = -1;
-					int num_srvs = -1;
-					int num_uavs = -1;
-					for (uint32_t i = 0; i < desc.BoundResources; ++ i)
+					this->FillCBufferIndices(effect);
+
+					int max_sampler_bind_pt = -1;
+					int max_srv_bind_pt = -1;
+					int max_uav_bind_pt = -1;
+					for (uint32_t i = 0; i < desc.BoundResources; ++i)
 					{
 						D3D11_SHADER_INPUT_BIND_DESC si_desc;
 						reflection->GetResourceBindingDesc(i, &si_desc);
@@ -1231,13 +491,13 @@ namespace KlayGE
 						switch (si_desc.Type)
 						{
 						case D3D_SIT_SAMPLER:
-							num_samplers = std::max(num_samplers, static_cast<int>(si_desc.BindPoint));
+							max_sampler_bind_pt = std::max(max_sampler_bind_pt, static_cast<int>(si_desc.BindPoint));
 							break;
 
 						case D3D_SIT_TEXTURE:
 						case D3D_SIT_STRUCTURED:
 						case D3D_SIT_BYTEADDRESS:
-							num_srvs = std::max(num_srvs, static_cast<int>(si_desc.BindPoint));
+							max_srv_bind_pt = std::max(max_srv_bind_pt, static_cast<int>(si_desc.BindPoint));
 							break;
 
 						case D3D_SIT_UAV_RWTYPED:
@@ -1245,7 +505,8 @@ namespace KlayGE
 						case D3D_SIT_UAV_RWBYTEADDRESS:
 						case D3D_SIT_UAV_APPEND_STRUCTURED:
 						case D3D_SIT_UAV_CONSUME_STRUCTURED:
-							num_uavs = std::max(num_uavs, static_cast<int>(si_desc.BindPoint));
+						case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
+							max_uav_bind_pt = std::max(max_uav_bind_pt, static_cast<int>(si_desc.BindPoint));
 							break;
 
 						default:
@@ -1253,11 +514,11 @@ namespace KlayGE
 						}
 					}
 
-					shader_desc_[type].num_samplers = static_cast<uint16_t>(num_samplers + 1);
-					shader_desc_[type].num_srvs = static_cast<uint16_t>(num_srvs + 1);
-					shader_desc_[type].num_uavs = static_cast<uint16_t>(num_uavs + 1);
+					shader_desc_.num_samplers = static_cast<uint16_t>(max_sampler_bind_pt + 1);
+					shader_desc_.num_srvs = static_cast<uint16_t>(max_srv_bind_pt + 1);
+					shader_desc_.num_uavs = static_cast<uint16_t>(max_uav_bind_pt + 1);
 
-					for (uint32_t i = 0; i < desc.BoundResources; ++ i)
+					for (uint32_t i = 0; i < desc.BoundResources; ++i)
 					{
 						D3D11_SHADER_INPUT_BIND_DESC si_desc;
 						reflection->GetResourceBindingDesc(i, &si_desc);
@@ -1273,16 +534,14 @@ namespace KlayGE
 						case D3D_SIT_UAV_RWBYTEADDRESS:
 						case D3D_SIT_UAV_APPEND_STRUCTURED:
 						case D3D_SIT_UAV_CONSUME_STRUCTURED:
+						case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
+							if (effect.ParameterByName(si_desc.Name))
 							{
-								RenderEffectParameterPtr const & p = effect.ParameterByName(si_desc.Name);
-								if (p)
-								{
-									D3D11ShaderDesc::BoundResourceDesc brd;
-									brd.name = si_desc.Name;
-									brd.type = static_cast<uint8_t>(si_desc.Type);
-									brd.bind_point = static_cast<uint16_t>(si_desc.BindPoint);
-									shader_desc_[type].res_desc.push_back(brd);
-								}
+								D3D11ShaderDesc::BoundResourceDesc brd;
+								brd.name = si_desc.Name;
+								brd.type = static_cast<uint8_t>(si_desc.Type);
+								brd.bind_point = static_cast<uint16_t>(si_desc.BindPoint);
+								shader_desc_.res_desc.push_back(brd);
 							}
 							break;
 
@@ -1291,568 +550,572 @@ namespace KlayGE
 						}
 					}
 
-					if (ST_VertexShader == type)
-					{
-						vs_signature_ = 0;
-						D3D11_SIGNATURE_PARAMETER_DESC_47 signature;
-						for (uint32_t i = 0; i < desc.InputParameters; ++ i)
-						{
-							reflection->GetInputParameterDesc(i, reinterpret_cast<D3D11_SIGNATURE_PARAMETER_DESC*>(&signature));
-
-							size_t seed = boost::hash_range(signature.SemanticName, signature.SemanticName + strlen(signature.SemanticName));
-							boost::hash_combine(seed, signature.SemanticIndex);
-							boost::hash_combine(seed, signature.Register);
-							boost::hash_combine(seed, static_cast<uint32_t>(signature.SystemValueType));
-							boost::hash_combine(seed, static_cast<uint32_t>(signature.ComponentType));
-							boost::hash_combine(seed, signature.Mask);
-							boost::hash_combine(seed, signature.ReadWriteMask);
-							boost::hash_combine(seed, signature.Stream);
-							boost::hash_combine(seed, signature.MinPrecision);
-
-							size_t sig = vs_signature_;
-							boost::hash_combine(sig, seed);
-							vs_signature_ = static_cast<uint32_t>(sig);
-						}
-					}
-					else if (ST_ComputeShader == type)
-					{
-						reflection->GetThreadGroupSize(&cs_block_size_x_, &cs_block_size_y_, &cs_block_size_z_);
-					}
-
-					reflection->Release();
+					this->StageSpecificReflection(reflection.get());
 				}
 
-				ID3DBlob* strip_code = nullptr;
-				render_eng.D3DStripShader(code->GetBufferPointer(), code->GetBufferSize(),
-					D3DCOMPILER_STRIP_REFLECTION_DATA | D3DCOMPILER_STRIP_DEBUG_INFO
-					| D3DCOMPILER_STRIP_TEST_BLOBS | D3DCOMPILER_STRIP_PRIVATE_DATA,
-					&strip_code);
-				if (strip_code)
-				{
-					code->Release();
-					code = strip_code;
-				}
+				shader_code_ =
+					ShaderStageObject::StripDXBC(shader_code_, D3DCOMPILER_STRIP_REFLECTION_DATA | D3DCOMPILER_STRIP_DEBUG_INFO |
+																   D3DCOMPILER_STRIP_TEST_BLOBS | D3DCOMPILER_STRIP_PRIVATE_DATA);
 			}
 		}
 
-		shared_ptr<std::vector<uint8_t> > ret;
-		if (code)
+		if (shader_code_.empty())
 		{
-			ret = MakeSharedPtr<std::vector<uint8_t> >(code->GetBufferSize());
-			std::memcpy(&((*ret)[0]), code->GetBufferPointer(), code->GetBufferSize());
-			code->Release();
+			shader_profile_.clear();
 		}
-
-		return ret;
 #else
-		UNREF_PARAM(type);
-		UNREF_PARAM(effect);
-		UNREF_PARAM(tech);
-		UNREF_PARAM(pass);
-		UNREF_PARAM(shader_desc_ids);
-
-		return shared_ptr<std::vector<uint8_t> >();
+		KFL_UNUSED(effect);
+		KFL_UNUSED(tech);
+		KFL_UNUSED(pass);
+		KFL_UNUSED(shader_desc_ids);
 #endif
 	}
 
-	void D3D11ShaderObject::AttachShaderBytecode(ShaderType type, RenderEffect const & effect,
-		std::vector<uint32_t> const & shader_desc_ids, shared_ptr<std::vector<uint8_t> > const & code_blob)
+	void D3D11ShaderStageObject::CreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
 	{
-		if (!code_blob)
+		if (!shader_code_.empty())
 		{
-			is_shader_validate_[type] = false;
-		}
-		else
-		{
-			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-			D3D11RenderEngine const & re = *checked_cast<D3D11RenderEngine const *>(&rf.RenderEngineInstance());
-			ID3D11DevicePtr const & d3d_device = re.D3DDevice();
-			RenderDeviceCaps const & caps = re.DeviceCaps();
+			auto const& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+			auto const& caps = re.DeviceCaps();
 
-			ShaderDesc const & sd = effect.GetShaderDesc(shader_desc_ids[type]);
+			ShaderDesc const& sd = effect.GetShaderDesc(shader_desc_ids[static_cast<uint32_t>(stage_)]);
 
-			int shader_ver = ("auto" == sd.profile) ? 0 : sd.profile[3] - '0';
-			if (shader_ver > caps.max_shader_model)
+			uint8_t const shader_major_ver = ("auto" == sd.profile) ? 0 : static_cast<uint8_t>(sd.profile[3] - '0');
+			uint8_t const shader_minor_ver = ("auto" == sd.profile) ? 0 : static_cast<uint8_t>(sd.profile[5] - '0');
+			if (ShaderModel(shader_major_ver, shader_minor_ver) > caps.max_shader_model)
 			{
-				is_shader_validate_[type] = false;
+				is_validate_ = false;
 			}
 			else
 			{
-				switch (type)
+				is_validate_ = true;
+				this->StageSpecificCreateHwShader(effect, shader_desc_ids);
+			}
+		}
+		else
+		{
+			is_validate_ = false;
+			this->ClearHwShader();
+		}
+
+		hw_res_ready_ = true;
+	}
+
+	void D3D11ShaderStageObject::FillCBufferIndices(RenderEffect const& effect)
+	{
+		if (!shader_desc_.cb_desc.empty())
+		{
+			cbuff_indices_.resize(shader_desc_.cb_desc.size());
+		}
+		for (size_t c = 0; c < shader_desc_.cb_desc.size(); ++c)
+		{
+			uint32_t i = 0;
+			for (; i < effect.NumCBuffers(); ++i)
+			{
+				if (effect.CBufferByIndex(i)->NameHash() == shader_desc_.cb_desc[c].name_hash)
 				{
-				case ST_VertexShader:
-					{
-						ID3D11VertexShader* vs;
-						if (FAILED(d3d_device->CreateVertexShader(&((*code_blob)[0]), code_blob->size(), nullptr, &vs)))
-						{
-							is_shader_validate_[type] = false;
-						}
-						else
-						{
-							vertex_shader_ = MakeCOMPtr(vs);
-
-							if (!sd.so_decl.empty())
-							{
-								if (caps.gs_support)
-								{
-									std::vector<D3D11_SO_DECLARATION_ENTRY> d3d11_decl(sd.so_decl.size());
-									for (size_t i = 0; i < sd.so_decl.size(); ++ i)
-									{
-										d3d11_decl[i] = D3D11Mapping::Mapping(sd.so_decl[i], static_cast<uint8_t>(i));
-									}
-
-									UINT rasterized_stream = 0;
-									if ((caps.max_shader_model >= 5) && (effect.GetShaderDesc(shader_desc_ids[ST_PixelShader]).func_name.empty()))
-									{
-										rasterized_stream = D3D11_SO_NO_RASTERIZED_STREAM;
-									}
-
-									ID3D11GeometryShader* gs;
-									if (FAILED(d3d_device->CreateGeometryShaderWithStreamOutput(&((*code_blob)[0]), code_blob->size(),
-										&d3d11_decl[0], static_cast<UINT>(d3d11_decl.size()), 0, 0, rasterized_stream, nullptr, &gs)))
-									{
-										is_shader_validate_[type] = false;
-									}
-									else
-									{
-										geometry_shader_ = MakeCOMPtr(gs);
-									}
-								}
-								else
-								{
-									is_shader_validate_[type] = false;
-								}
-							}
-
-							shader_code_[type].first = code_blob;
-						}
-					}
-					break;
-
-				case ST_PixelShader:
-					{
-						ID3D11PixelShader* ps;
-						if (FAILED(d3d_device->CreatePixelShader(&((*code_blob)[0]), code_blob->size(), nullptr, &ps)))
-						{
-							is_shader_validate_[type] = false;
-						}
-						else
-						{
-							pixel_shader_ = MakeCOMPtr(ps);
-							shader_code_[type].first = code_blob;
-						}
-					}
-					break;
-
-				case ST_GeometryShader:
-					if (caps.gs_support)
-					{
-						if (!sd.so_decl.empty())
-						{
-							std::vector<D3D11_SO_DECLARATION_ENTRY> d3d11_decl(sd.so_decl.size());
-							for (size_t i = 0; i < sd.so_decl.size(); ++ i)
-							{
-								d3d11_decl[i] = D3D11Mapping::Mapping(sd.so_decl[i], static_cast<uint8_t>(i));
-							}
-
-							UINT rasterized_stream = 0;
-							if ((caps.max_shader_model >= 5) && (effect.GetShaderDesc(shader_desc_ids[ST_PixelShader]).func_name.empty()))
-							{
-								rasterized_stream = D3D11_SO_NO_RASTERIZED_STREAM;
-							}
-
-							ID3D11GeometryShader* gs;
-							if (FAILED(d3d_device->CreateGeometryShaderWithStreamOutput(&((*code_blob)[0]), code_blob->size(),
-								&d3d11_decl[0], static_cast<UINT>(d3d11_decl.size()), 0, 0, rasterized_stream, nullptr, &gs)))
-							{
-								is_shader_validate_[type] = false;
-							}
-							else
-							{
-								geometry_shader_ = MakeCOMPtr(gs);
-								shader_code_[type].first = code_blob;
-							}
-						}
-						else
-						{
-							ID3D11GeometryShader* gs;
-							if (FAILED(d3d_device->CreateGeometryShader(&((*code_blob)[0]), code_blob->size(), nullptr, &gs)))
-							{
-								is_shader_validate_[type] = false;
-							}
-							else
-							{
-								geometry_shader_ = MakeCOMPtr(gs);
-								shader_code_[type].first = code_blob;
-							}
-						}
-					}
-					else
-					{
-						is_shader_validate_[type] = false;
-					}
-					break;
-
-				case ST_ComputeShader:
-					if (caps.cs_support)
-					{
-						ID3D11ComputeShader* cs;
-						if (FAILED(d3d_device->CreateComputeShader(&((*code_blob)[0]), code_blob->size(), nullptr, &cs)))
-						{
-							is_shader_validate_[type] = false;
-						}
-						else
-						{
-							compute_shader_ = MakeCOMPtr(cs);
-							shader_code_[type].first = code_blob;
-						}
-					}
-					else
-					{
-						is_shader_validate_[type] = false;
-					}
-					break;
-
-				case ST_HullShader:
-					if (caps.hs_support)
-					{
-						ID3D11HullShader* hs;
-						if (FAILED(d3d_device->CreateHullShader(&((*code_blob)[0]), code_blob->size(), nullptr, &hs)))
-						{
-							is_shader_validate_[type] = false;
-						}
-						else
-						{
-							hull_shader_ = MakeCOMPtr(hs);
-							shader_code_[type].first = code_blob;
-							has_tessellation_ = true;
-						}
-					}
-					else
-					{
-						is_shader_validate_[type] = false;
-					}
-					break;
-
-				case ST_DomainShader:
-					if (caps.ds_support)
-					{
-						ID3D11DomainShader* ds;
-						if (FAILED(d3d_device->CreateDomainShader(&((*code_blob)[0]), code_blob->size(), nullptr, &ds)))
-						{
-							is_shader_validate_[type] = false;
-						}
-						else
-						{
-							domain_shader_ = MakeCOMPtr(ds);
-
-							if (!sd.so_decl.empty())
-							{
-								if (caps.gs_support)
-								{
-									std::vector<D3D11_SO_DECLARATION_ENTRY> d3d11_decl(sd.so_decl.size());
-									for (size_t i = 0; i < sd.so_decl.size(); ++ i)
-									{
-										d3d11_decl[i] = D3D11Mapping::Mapping(sd.so_decl[i], static_cast<uint8_t>(i));
-									}
-
-									UINT rasterized_stream = 0;
-									if ((caps.max_shader_model >= 5) && (effect.GetShaderDesc(shader_desc_ids[ST_PixelShader]).func_name.empty()))
-									{
-										rasterized_stream = D3D11_SO_NO_RASTERIZED_STREAM;
-									}
-
-									ID3D11GeometryShader* gs;
-									if (FAILED(d3d_device->CreateGeometryShaderWithStreamOutput(&((*code_blob)[0]), code_blob->size(),
-										&d3d11_decl[0], static_cast<UINT>(d3d11_decl.size()), 0, 0, rasterized_stream, nullptr, &gs)))
-									{
-										is_shader_validate_[type] = false;
-									}
-									else
-									{
-										geometry_shader_ = MakeCOMPtr(gs);
-									}
-								}
-								else
-								{
-									is_shader_validate_[type] = false;
-								}
-							}
-
-							shader_code_[type].first = code_blob;
-							has_tessellation_ = true;
-						}
-					}
-					else
-					{
-						is_shader_validate_[type] = false;
-					}
-					break;
-
-				default:
-					is_shader_validate_[type] = false;
+					cbuff_indices_[c] = static_cast<uint8_t>(i);
 					break;
 				}
 			}
+			BOOST_ASSERT(i < effect.NumCBuffers());
+		}
+	}
 
-			// Shader reflection
-			cbuff_indices_[type].resize(shader_desc_[type].cb_desc.size());
-			d3d11_cbuffs_[type].resize(shader_desc_[type].cb_desc.size());
-			for (size_t c = 0; c < shader_desc_[type].cb_desc.size(); ++ c)
+	ID3D11GeometryShaderPtr D3D11ShaderStageObject::CreateGeometryShaderWithStreamOutput(RenderEffect const& effect,
+		std::array<uint32_t, NumShaderStages> const& shader_desc_ids, std::span<uint8_t const> code_blob,
+		std::vector<ShaderDesc::StreamOutputDecl> const& so_decl)
+	{
+		BOOST_ASSERT(!code_blob.empty());
+
+		auto& rf = Context::Instance().RenderFactoryInstance();
+		auto const& d3d11_re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+		auto* d3d_device = d3d11_re.D3DDevice1();
+		auto const& caps = d3d11_re.DeviceCaps();
+
+		std::vector<D3D11_SO_DECLARATION_ENTRY> d3d11_decl(so_decl.size());
+		for (size_t i = 0; i < so_decl.size(); ++i)
+		{
+			d3d11_decl[i] = D3D11Mapping::Mapping(so_decl[i]);
+		}
+
+		UINT rasterized_stream = 0;
+		if ((caps.max_shader_model >= ShaderModel(5, 0)) &&
+			(effect.GetShaderDesc(shader_desc_ids[static_cast<uint32_t>(ShaderStage::Pixel)]).func_name.empty()))
+		{
+			rasterized_stream = D3D11_SO_NO_RASTERIZED_STREAM;
+		}
+
+		ID3D11GeometryShaderPtr gs;
+		if (FAILED(d3d_device->CreateGeometryShaderWithStreamOutput(code_blob.data(), code_blob.size(), &d3d11_decl[0],
+				static_cast<UINT>(d3d11_decl.size()), nullptr, 0, rasterized_stream, nullptr, gs.put())))
+		{
+			is_validate_ = false;
+		}
+
+		return gs;
+	}
+
+	std::string_view D3D11ShaderStageObject::GetShaderProfile(RenderEffect const& effect, uint32_t shader_desc_id) const
+	{
+		std::string_view shader_profile = effect.GetShaderDesc(shader_desc_id).profile;
+		if (is_available_)
+		{
+			if (shader_profile == "auto")
 			{
-				bool found = false;
-				for (uint32_t i = 0; i < effect.NumCBuffers(); ++ i)
-				{
-					if (effect.CBufferByIndex(i)->NameHash() == shader_desc_[type].cb_desc[c].name_hash)
-					{
-						cbuff_indices_[type][c] = static_cast<uint8_t>(i);
-						found = true;
-						break;
-					}
-				}
-				BOOST_ASSERT(found);
+				auto const& re =
+					checked_cast<D3D11RenderEngine const&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+				shader_profile = re.DefaultShaderProfile(stage_);
 			}
+		}
+		else
+		{
+			shader_profile = std::string_view();
+		}
+		return shader_profile;
+	}
 
-			samplers_[type].resize(shader_desc_[type].num_samplers);
-			srvsrcs_[type].resize(shader_desc_[type].num_srvs, make_tuple(static_cast<void*>(nullptr), 0, 0));
-			srvs_[type].resize(shader_desc_[type].num_srvs);
-			uavsrcs_[type].resize(shader_desc_[type].num_uavs, nullptr);
-			uavs_[type].resize(shader_desc_[type].num_uavs);
 
-			for (size_t i = 0; i < shader_desc_[type].res_desc.size(); ++ i)
+	D3D11VertexShaderStageObject::D3D11VertexShaderStageObject() : D3D11ShaderStageObject(ShaderStage::Vertex)
+	{
+		is_available_ = true;
+	}
+
+	void D3D11VertexShaderStageObject::ClearHwShader()
+	{
+		vertex_shader_.reset();
+		geometry_shader_.reset();
+	}
+
+	void D3D11VertexShaderStageObject::StageSpecificCreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
+	{
+		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+		auto const& re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+		ID3D11Device1* d3d_device = re.D3DDevice1();
+
+		if (FAILED(d3d_device->CreateVertexShader(shader_code_.data(), shader_code_.size(), nullptr, vertex_shader_.put())))
+		{
+			is_validate_ = false;
+		}
+		else
+		{
+			RenderDeviceCaps const& caps = re.DeviceCaps();
+			ShaderDesc const& sd = effect.GetShaderDesc(shader_desc_ids[static_cast<uint32_t>(stage_)]);
+			if (!sd.so_decl.empty())
 			{
-				RenderEffectParameterPtr const & p = effect.ParameterByName(shader_desc_[type].res_desc[i].name);
-				BOOST_ASSERT(p);
-
-				D3D11ShaderParameterHandle p_handle;
-				p_handle.shader_type = static_cast<uint8_t>(type);
-				if (D3D_SIT_SAMPLER == shader_desc_[type].res_desc[i].type)
+				if (caps.gs_support)
 				{
-					p_handle.param_type = D3D_SVT_SAMPLER;
+					geometry_shader_ = this->CreateGeometryShaderWithStreamOutput(effect, shader_desc_ids, shader_code_, sd.so_decl);
 				}
 				else
 				{
-					if (D3D_SRV_DIMENSION_BUFFER == shader_desc_[type].res_desc[i].dimension)
+					is_validate_ = false;
+				}
+			}
+		}
+	}
+
+	void D3D11VertexShaderStageObject::StageSpecificStreamIn(ResIdentifier& res)
+	{
+		res.read(reinterpret_cast<char*>(&vs_signature_), sizeof(vs_signature_));
+		vs_signature_ = LE2Native(vs_signature_);
+	}
+
+	void D3D11VertexShaderStageObject::StageSpecificStreamOut(std::ostream& os)
+	{
+		uint32_t const vs_signature = Native2LE(vs_signature_);
+		os.write(reinterpret_cast<char const*>(&vs_signature), sizeof(vs_signature));
+	}
+
+#if KLAYGE_IS_DEV_PLATFORM
+	void D3D11VertexShaderStageObject::StageSpecificReflection(ID3D11ShaderReflection* reflection)
+	{
+		D3D11_SHADER_DESC desc;
+		reflection->GetDesc(&desc);
+
+		vs_signature_ = 0;
+		D3D11_SIGNATURE_PARAMETER_DESC signature;
+		for (uint32_t i = 0; i < desc.InputParameters; ++i)
+		{
+			reflection->GetInputParameterDesc(i, &signature);
+
+			size_t seed = RT_HASH(signature.SemanticName);
+			HashCombine(seed, signature.SemanticIndex);
+			HashCombine(seed, signature.Register);
+			HashCombine(seed, static_cast<uint32_t>(signature.SystemValueType));
+			HashCombine(seed, static_cast<uint32_t>(signature.ComponentType));
+			HashCombine(seed, signature.Mask);
+			HashCombine(seed, signature.ReadWriteMask);
+			HashCombine(seed, signature.Stream);
+			HashCombine(seed, signature.MinPrecision);
+
+			size_t sig = vs_signature_;
+			HashCombine(sig, seed);
+			vs_signature_ = static_cast<uint32_t>(sig);
+		}
+	}
+#endif
+
+
+	D3D11PixelShaderStageObject::D3D11PixelShaderStageObject() : D3D11ShaderStageObject(ShaderStage::Pixel)
+	{
+		is_available_ = true;
+	}
+
+	void D3D11PixelShaderStageObject::ClearHwShader()
+	{
+		pixel_shader_.reset();
+	}
+
+	void D3D11PixelShaderStageObject::StageSpecificCreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
+	{
+		KFL_UNUSED(effect);
+		KFL_UNUSED(shader_desc_ids);
+
+		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+		auto const& re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+		ID3D11Device1* d3d_device = re.D3DDevice1();
+
+		if (FAILED(d3d_device->CreatePixelShader(shader_code_.data(), shader_code_.size(), nullptr, pixel_shader_.put())))
+		{
+			is_validate_ = false;
+		}
+	}
+
+
+	D3D11GeometryShaderStageObject::D3D11GeometryShaderStageObject() : D3D11ShaderStageObject(ShaderStage::Geometry)
+	{
+		auto const& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		auto const& caps = re.DeviceCaps();
+		is_available_ = caps.gs_support;
+	}
+
+	void D3D11GeometryShaderStageObject::ClearHwShader()
+	{
+		geometry_shader_.reset();
+	}
+
+	void D3D11GeometryShaderStageObject::StageSpecificCreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
+	{
+		if (is_available_)
+		{
+			ShaderDesc const& sd = effect.GetShaderDesc(shader_desc_ids[static_cast<uint32_t>(stage_)]);
+			if (sd.so_decl.empty())
+			{
+				RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+				auto const& re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+				ID3D11Device1* d3d_device = re.D3DDevice1();
+
+				if (FAILED(d3d_device->CreateGeometryShader(shader_code_.data(), shader_code_.size(), nullptr, geometry_shader_.put())))
+				{
+					is_validate_ = false;
+				}
+			}
+			else
+			{
+				geometry_shader_ = this->CreateGeometryShaderWithStreamOutput(effect, shader_desc_ids, shader_code_, sd.so_decl);
+			}
+		}
+		else
+		{
+			is_validate_ = false;
+		}
+	}
+
+
+	D3D11ComputeShaderStageObject::D3D11ComputeShaderStageObject() : D3D11ShaderStageObject(ShaderStage::Compute)
+	{
+		auto const& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		auto const& caps = re.DeviceCaps();
+		is_available_ = caps.cs_support;
+	}
+
+	void D3D11ComputeShaderStageObject::ClearHwShader()
+	{
+		compute_shader_.reset();
+	}
+
+	void D3D11ComputeShaderStageObject::StageSpecificCreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
+	{
+		KFL_UNUSED(effect);
+		KFL_UNUSED(shader_desc_ids);
+
+		if (is_available_)
+		{
+			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+			auto const& re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+			ID3D11Device1* d3d_device = re.D3DDevice1();
+
+			if (FAILED(d3d_device->CreateComputeShader(shader_code_.data(), shader_code_.size(), nullptr, compute_shader_.put())))
+			{
+				is_validate_ = false;
+			}
+		}
+		else
+		{
+			is_validate_ = false;
+		}
+	}
+
+	void D3D11ComputeShaderStageObject::StageSpecificStreamIn(ResIdentifier& res)
+	{
+		res.read(reinterpret_cast<char*>(&block_size_x_), sizeof(block_size_x_));
+		block_size_x_ = LE2Native(block_size_x_);
+
+		res.read(reinterpret_cast<char*>(&block_size_y_), sizeof(block_size_y_));
+		block_size_y_ = LE2Native(block_size_y_);
+
+		res.read(reinterpret_cast<char*>(&block_size_z_), sizeof(block_size_z_));
+		block_size_z_ = LE2Native(block_size_z_);
+	}
+
+	void D3D11ComputeShaderStageObject::StageSpecificStreamOut(std::ostream& os)
+	{
+		uint32_t block_size_x = Native2LE(block_size_x_);
+		os.write(reinterpret_cast<char const*>(&block_size_x), sizeof(block_size_x));
+
+		uint32_t block_size_y = Native2LE(block_size_y_);
+		os.write(reinterpret_cast<char const*>(&block_size_y), sizeof(block_size_y));
+
+		uint32_t block_size_z = Native2LE(block_size_z_);
+		os.write(reinterpret_cast<char const*>(&block_size_z), sizeof(block_size_z));
+	}
+
+#if KLAYGE_IS_DEV_PLATFORM
+	void D3D11ComputeShaderStageObject::StageSpecificReflection(ID3D11ShaderReflection* reflection)
+	{
+		reflection->GetThreadGroupSize(&block_size_x_, &block_size_y_, &block_size_z_);
+	}
+#endif
+
+
+	D3D11HullShaderStageObject::D3D11HullShaderStageObject() : D3D11ShaderStageObject(ShaderStage::Hull)
+	{
+		auto const& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		auto const& caps = re.DeviceCaps();
+		is_available_ = caps.hs_support;
+	}
+
+	void D3D11HullShaderStageObject::ClearHwShader()
+	{
+		hull_shader_.reset();
+	}
+
+	void D3D11HullShaderStageObject::StageSpecificCreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
+	{
+		KFL_UNUSED(effect);
+		KFL_UNUSED(shader_desc_ids);
+
+		if (is_available_)
+		{
+			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+			auto const& re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+			ID3D11Device1* d3d_device = re.D3DDevice1();
+
+			if (FAILED(d3d_device->CreateHullShader(shader_code_.data(), shader_code_.size(), nullptr, hull_shader_.put())))
+			{
+				is_validate_ = false;
+			}
+		}
+		else
+		{
+			is_validate_ = false;
+		}
+	}
+
+
+	D3D11DomainShaderStageObject::D3D11DomainShaderStageObject() : D3D11ShaderStageObject(ShaderStage::Domain)
+	{
+		auto const& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		auto const& caps = re.DeviceCaps();
+		is_available_ = caps.ds_support;
+	}
+
+	void D3D11DomainShaderStageObject::ClearHwShader()
+	{
+		domain_shader_.reset();
+		geometry_shader_.reset();
+	}
+
+	void D3D11DomainShaderStageObject::StageSpecificCreateHwShader(
+		RenderEffect const& effect, std::array<uint32_t, NumShaderStages> const& shader_desc_ids)
+	{
+		if (is_available_)
+		{
+			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+			auto const& re = checked_cast<D3D11RenderEngine const&>(rf.RenderEngineInstance());
+			ID3D11Device1* d3d_device = re.D3DDevice1();
+
+			if (FAILED(d3d_device->CreateDomainShader(shader_code_.data(), shader_code_.size(), nullptr, domain_shader_.put())))
+			{
+				is_validate_ = false;
+			}
+			else
+			{
+				ShaderDesc const& sd = effect.GetShaderDesc(shader_desc_ids[static_cast<uint32_t>(stage_)]);
+				if (!sd.so_decl.empty())
+				{
+					RenderDeviceCaps const& caps = re.DeviceCaps();
+					if (caps.gs_support)
 					{
-						p_handle.param_type = D3D_SVT_BUFFER;
+						geometry_shader_ = this->CreateGeometryShaderWithStreamOutput(effect, shader_desc_ids, shader_code_, sd.so_decl);
 					}
 					else
 					{
-						p_handle.param_type = D3D_SVT_TEXTURE;
+						is_validate_ = false;
 					}
 				}
-				p_handle.cbuff = 0;
-				p_handle.offset = shader_desc_[type].res_desc[i].bind_point;
-				p_handle.elements = 1;
-				p_handle.rows = 0;
-				p_handle.columns = 1;
-
-				param_binds_[type].push_back(this->GetBindFunc(p_handle, p));
 			}
+		}
+		else
+		{
+			is_validate_ = false;
 		}
 	}
 
-	void D3D11ShaderObject::AttachShader(ShaderType type, RenderEffect const & effect,
-			RenderTechnique const & tech, RenderPass const & pass, std::vector<uint32_t> const & shader_desc_ids)
+
+	D3D11ShaderObject::D3D11ShaderObject() : D3D11ShaderObject(MakeSharedPtr<ShaderObjectTemplate>())
 	{
-		shared_ptr<std::vector<uint8_t> > code_blob = this->CompiteToBytecode(type, effect, tech, pass, shader_desc_ids);
-		this->AttachShaderBytecode(type, effect, shader_desc_ids, code_blob);
 	}
 
-	void D3D11ShaderObject::AttachShader(ShaderType type, RenderEffect const & /*effect*/,
-			RenderTechnique const & /*tech*/, RenderPass const & /*pass*/, ShaderObjectPtr const & shared_so)
+	D3D11ShaderObject::D3D11ShaderObject(std::shared_ptr<ShaderObjectTemplate> so_template) : ShaderObject(std::move(so_template))
 	{
-		if (shared_so)
-		{
-			D3D11ShaderObject const & so = *checked_cast<D3D11ShaderObject*>(shared_so.get());
-
-			is_shader_validate_[type] = so.is_shader_validate_[type];
-			shader_code_[type] = so.shader_code_[type];
-			shader_desc_[type] = so.shader_desc_[type];
-			switch (type)
-			{
-			case ST_VertexShader:
-				vertex_shader_ = so.vertex_shader_;
-				vs_signature_ = so.vs_signature_;
-				geometry_shader_ = so.geometry_shader_;
-				break;
-
-			case ST_PixelShader:
-				pixel_shader_ = so.pixel_shader_;
-				break;
-
-			case ST_GeometryShader:
-				geometry_shader_ = so.geometry_shader_;
-				break;
-
-			case ST_ComputeShader:
-				compute_shader_ = so.compute_shader_;
-				cs_block_size_x_ = so.cs_block_size_x_;
-				cs_block_size_y_ = so.cs_block_size_y_;
-				cs_block_size_z_ = so.cs_block_size_z_;
-				break;
-
-			case ST_HullShader:
-				hull_shader_ = so.hull_shader_;
-				if (hull_shader_)
-				{
-					has_tessellation_ = true;
-				}
-				break;
-
-			case ST_DomainShader:
-				domain_shader_ = so.domain_shader_;
-				if (domain_shader_)
-				{
-					has_tessellation_ = true;
-				}
-				break;
-
-			default:
-				is_shader_validate_[type] = false;
-				break;
-			}
-
-			samplers_[type].resize(so.samplers_[type].size());
-			srvsrcs_[type].resize(so.srvs_[type].size(), make_tuple(static_cast<void*>(nullptr), 0, 0));
-			srvs_[type].resize(so.srvs_[type].size());
-			uavsrcs_[type].resize(so.uavs_[type].size(), nullptr);
-			uavs_[type].resize(so.uavs_[type].size());
-
-			cbuff_indices_[type] = so.cbuff_indices_[type];
-			d3d11_cbuffs_[type].resize(so.d3d11_cbuffs_[type].size());
-
-			param_binds_[type].reserve(so.param_binds_[type].size());
-			typedef KLAYGE_DECLTYPE(so.param_binds_[type]) ParamBindsType;
-			KLAYGE_FOREACH(ParamBindsType::const_reference pb, so.param_binds_[type])
-			{
-				param_binds_[type].push_back(this->GetBindFunc(pb.p_handle, pb.param));
-			}
-		}
 	}
 
-	void D3D11ShaderObject::LinkShaders(RenderEffect const & effect)
+	void D3D11ShaderObject::CreateHwResources(ShaderStage stage, RenderEffect const& effect)
 	{
-		std::vector<uint32_t> all_cbuff_indices;
-		is_validate_ = true;
-		for (size_t type = 0; type < ShaderObject::ST_NumShaderTypes; ++ type)
+		auto& shader_stage = checked_cast<D3D11ShaderStageObject&>(*this->Stage(stage));
+		if (!shader_stage.ShaderCodeBlob().empty())
 		{
-			is_validate_ &= is_shader_validate_[type];
+			auto const & shader_desc = shader_stage.GetD3D11ShaderDesc();
 
-			all_cbuff_indices.insert(all_cbuff_indices.end(),
-				cbuff_indices_[type].begin(), cbuff_indices_[type].end());
-			for (size_t i = 0; i < cbuff_indices_[type].size(); ++ i)
+			uint32_t const stage_index = static_cast<uint32_t>(stage);
+
+			samplers_[stage_index].resize(shader_desc.num_samplers);
+			srvsrcs_[stage_index].resize(shader_desc.num_srvs, std::make_tuple(static_cast<void*>(nullptr), 0, 0));
+			srvs_[stage_index].resize(shader_desc.num_srvs);
+			uavsrcs_.resize(shader_desc.num_uavs, nullptr);
+			uavs_.resize(shader_desc.num_uavs);
+			uav_init_counts_.resize(shader_desc.num_uavs);
+
+			for (size_t i = 0; i < shader_desc.res_desc.size(); ++ i)
 			{
-				RenderEffectConstantBufferPtr const & cbuff = effect.CBufferByIndex(cbuff_indices_[type][i]);
-				cbuff->Resize(shader_desc_[type].cb_desc[i].size);
-				BOOST_ASSERT(cbuff->NumParameters() == shader_desc_[type].cb_desc[i].var_desc.size());
-				for (uint32_t j = 0; j < cbuff->NumParameters(); ++ j)
+				RenderEffectParameter* p = effect.ParameterByName(shader_desc.res_desc[i].name);
+				BOOST_ASSERT(p);
+
+				uint32_t offset = shader_desc.res_desc[i].bind_point;
+				if (D3D_SIT_SAMPLER == shader_desc.res_desc[i].type)
 				{
-					RenderEffectParameterPtr const & param = effect.ParameterByIndex(cbuff->ParameterIndex(j));
-					uint32_t stride;
-					if (shader_desc_[type].cb_desc[i].var_desc[j].elements > 0)
+					SamplerStateObjectPtr sampler;
+					p->Value(sampler);
+					if (sampler)
 					{
-						if (param->Type() != REDT_float4x4)
-						{
-							stride = 16;
-						}
-						else
-						{
-							stride = 64;
-						}
+						samplers_[stage_index][offset] = checked_cast<D3D11SamplerStateObject&>(*sampler).D3DSamplerState();
 					}
-					else
-					{
-						if (param->Type() != REDT_float4x4)
-						{
-							stride = 4;
-						}
-						else
-						{
-							stride = 16;
-						}
-					}
-					param->BindToCBuffer(cbuff, shader_desc_[type].cb_desc[i].var_desc[j].start_offset, stride);
 				}
-
-				d3d11_cbuffs_[type][i] = checked_cast<D3D11GraphicsBuffer*>(cbuff->HWBuff().get())->D3DBuffer();
+				else
+				{
+					param_binds_[stage_index].push_back(this->GetBindFunc(stage, offset, p));
+				}
 			}
 		}
+	}
 
-		std::sort(all_cbuff_indices.begin(), all_cbuff_indices.end());
-		all_cbuff_indices.erase(std::unique(all_cbuff_indices.begin(), all_cbuff_indices.end()),
-			all_cbuff_indices.end());
-		all_cbuffs_.resize(all_cbuff_indices.size());
-		for (size_t i = 0; i < all_cbuff_indices.size(); ++ i)
+	void D3D11ShaderObject::DoLinkShaders(RenderEffect const & effect)
+	{
+		for (size_t stage = 0; stage < NumShaderStages; ++stage)
 		{
-			all_cbuffs_[i] = effect.CBufferByIndex(all_cbuff_indices[i]);
+			auto const* shader_stage = checked_cast<D3D11ShaderStageObject*>(this->Stage(static_cast<ShaderStage>(stage)).get());
+			if (shader_stage)
+			{
+				if (!shader_stage->CBufferIndices().empty())
+				{
+					auto const& shader_desc = shader_stage->GetD3D11ShaderDesc();
+					auto const& cbuff_indices = shader_stage->CBufferIndices();
+
+					for (size_t i = 0; i < cbuff_indices.size(); ++i)
+					{
+						auto cbuff = effect.CBufferByIndex(cbuff_indices[i]);
+						cbuff->Resize(shader_desc.cb_desc[i].size);
+						BOOST_ASSERT(cbuff->NumParameters() == shader_desc.cb_desc[i].var_desc.size());
+						for (uint32_t j = 0; j < cbuff->NumParameters(); ++j)
+						{
+							RenderEffectParameter* param = effect.ParameterByIndex(cbuff->ParameterIndex(j));
+							uint32_t stride;
+							if (param->Type() == REDT_struct)
+							{
+								stride = 1;
+							}
+							else if (shader_desc.cb_desc[i].var_desc[j].elements > 0)
+							{
+								if (param->Type() != REDT_float4x4)
+								{
+									stride = 16;
+								}
+								else
+								{
+									stride = 64;
+								}
+							}
+							else
+							{
+								if (param->Type() != REDT_float4x4)
+								{
+									stride = 4;
+								}
+								else
+								{
+									stride = 16;
+								}
+							}
+							param->BindToCBuffer(effect, cbuff_indices[i], shader_desc.cb_desc[i].var_desc[j].start_offset, stride);
+						}
+					}
+				}
+			}
 		}
 	}
-	
+
 	ShaderObjectPtr D3D11ShaderObject::Clone(RenderEffect const & effect)
 	{
-		D3D11ShaderObjectPtr ret = MakeSharedPtr<D3D11ShaderObject>();
-		ret->has_discard_ = has_discard_;
-		ret->has_tessellation_ = has_tessellation_;
+		auto ret = MakeSharedPtr<D3D11ShaderObject>(so_template_);
+
 		ret->is_validate_ = is_validate_;
-		ret->is_shader_validate_ = is_shader_validate_;
-		ret->vertex_shader_ = vertex_shader_;
-		ret->pixel_shader_ = pixel_shader_;
-		ret->geometry_shader_ = geometry_shader_;
-		ret->compute_shader_ = compute_shader_;
-		ret->hull_shader_ = hull_shader_;
-		ret->domain_shader_ = domain_shader_;
-		ret->vs_signature_ = vs_signature_;
-		ret->cs_block_size_x_ = cs_block_size_x_;
-		ret->cs_block_size_y_ = cs_block_size_y_;
-		ret->cs_block_size_z_ = cs_block_size_z_;
+		ret->hw_res_ready_ = hw_res_ready_;
+		ret->uavsrcs_.resize(uavsrcs_.size(), nullptr);
+		ret->uavs_.resize(uavs_.size());
+		ret->uav_init_counts_.resize(uav_init_counts_.size());
 
-		std::vector<uint32_t> all_cbuff_indices;
-		for (size_t i = 0; i < ST_NumShaderTypes; ++ i)
+		for (size_t i = 0; i < NumShaderStages; ++ i)
 		{
-			ret->shader_code_[i] = shader_code_[i];
-			ret->shader_desc_[i] = shader_desc_[i];
-
-			ret->samplers_[i].resize(samplers_[i].size());
-			ret->srvsrcs_[i].resize(srvsrcs_[i].size(), make_tuple(static_cast<void*>(nullptr), 0, 0));
+			ret->samplers_[i] = samplers_[i];
+			ret->srvsrcs_[i].resize(srvsrcs_[i].size(), std::make_tuple(static_cast<void*>(nullptr), 0, 0));
 			ret->srvs_[i].resize(srvs_[i].size());
-			ret->uavsrcs_[i].resize(uavsrcs_[i].size(), nullptr);
-			ret->uavs_[i].resize(uavs_[i].size());
-
-			ret->cbuff_indices_[i] = cbuff_indices_[i];
-			ret->d3d11_cbuffs_[i].resize(d3d11_cbuffs_.size());
-			all_cbuff_indices.insert(all_cbuff_indices.end(), cbuff_indices_[i].begin(), cbuff_indices_[i].end());
-			for (size_t j = 0; j < cbuff_indices_[i].size(); ++ j)
-			{
-				RenderEffectConstantBufferPtr cbuff = effect.CBufferByIndex(cbuff_indices_[i][j]);
-				ret->d3d11_cbuffs_[i][j] = checked_cast<D3D11GraphicsBuffer*>(cbuff->HWBuff().get())->D3DBuffer();
-			}
 
 			ret->param_binds_[i].reserve(param_binds_[i].size());
-			typedef KLAYGE_DECLTYPE(param_binds_[i]) ParamBindsType;
-			KLAYGE_FOREACH(ParamBindsType::const_reference pb, param_binds_[i])
+			for (auto const & pb : param_binds_[i])
 			{
-				ret->param_binds_[i].push_back(ret->GetBindFunc(pb.p_handle, effect.ParameterByName(*(pb.param->Name()))));
+				ret->param_binds_[i].push_back(ret->GetBindFunc(static_cast<ShaderStage>(i), pb.offset,
+					effect.ParameterByName(pb.param->Name())));
 			}
-		}
-
-		std::sort(all_cbuff_indices.begin(), all_cbuff_indices.end());
-		all_cbuff_indices.erase(std::unique(all_cbuff_indices.begin(), all_cbuff_indices.end()),
-			all_cbuff_indices.end());
-		ret->all_cbuffs_.resize(all_cbuff_indices.size());
-		for (size_t i = 0; i < all_cbuff_indices.size(); ++ i)
-		{
-			ret->all_cbuffs_[i] = effect.CBufferByIndex(all_cbuff_indices[i]);
 		}
 
 		return ret;
 	}
 
-	D3D11ShaderObject::parameter_bind_t D3D11ShaderObject::GetBindFunc(D3D11ShaderParameterHandle const & p_handle, RenderEffectParameterPtr const & param)
+	D3D11ShaderObject::ParameterBind D3D11ShaderObject::GetBindFunc(ShaderStage stage, uint32_t offset, RenderEffectParameter* param)
 	{
-		parameter_bind_t ret;
+		uint32_t const stage_index = static_cast<uint32_t>(stage);
+
+		ParameterBind ret;
 		ret.param = param;
-		std::memcpy(&ret.p_handle, &p_handle, sizeof(p_handle));
+		ret.offset = offset;
 
 		switch (param->Type())
 		{
@@ -1870,21 +1133,20 @@ namespace KlayGE
 		case REDT_float3:
 		case REDT_float4:
 		case REDT_float4x4:
-			break;
-
 		case REDT_sampler:
-			ret.func = SetD3D11ShaderParameterSampler(samplers_[p_handle.shader_type][p_handle.offset], param);
 			break;
 
 		case REDT_texture1D:
 		case REDT_texture2D:
+		case REDT_texture2DMS:
 		case REDT_texture3D:
 		case REDT_textureCUBE:
 		case REDT_texture1DArray:
 		case REDT_texture2DArray:
+		case REDT_texture2DMSArray:
 		case REDT_texture3DArray:
 		case REDT_textureCUBEArray:
-			ret.func = SetD3D11ShaderParameterTextureSRV(srvsrcs_[p_handle.shader_type][p_handle.offset], srvs_[p_handle.shader_type][p_handle.offset], param);
+			ret.func = SetD3D11ShaderParameterTextureSRV(srvsrcs_[stage_index][offset], srvs_[stage_index][offset], param);
 			break;
 
 		case REDT_buffer:
@@ -1892,7 +1154,7 @@ namespace KlayGE
 		case REDT_consume_structured_buffer:
 		case REDT_append_structured_buffer:
 		case REDT_byte_address_buffer:
-			ret.func = SetD3D11ShaderParameterGraphicsBufferSRV(srvsrcs_[p_handle.shader_type][p_handle.offset], srvs_[p_handle.shader_type][p_handle.offset], param);
+			ret.func = SetD3D11ShaderParameterGraphicsBufferSRV(srvsrcs_[stage_index][offset], srvs_[stage_index][offset], param);
 			break;
 
 		case REDT_rw_texture1D:
@@ -1900,95 +1162,139 @@ namespace KlayGE
 		case REDT_rw_texture3D:
 		case REDT_rw_texture1DArray:
 		case REDT_rw_texture2DArray:
-			ret.func = SetD3D11ShaderParameterTextureUAV(uavsrcs_[p_handle.shader_type][p_handle.offset], uavs_[p_handle.shader_type][p_handle.offset], param);
+		case REDT_rasterizer_ordered_texture1D:
+		case REDT_rasterizer_ordered_texture1DArray:
+		case REDT_rasterizer_ordered_texture2D:
+		case REDT_rasterizer_ordered_texture2DArray:
+		case REDT_rasterizer_ordered_texture3D:
+			ret.func = SetD3D11ShaderParameterTextureUAV(uavsrcs_[offset], uavs_[offset], uav_init_counts_[offset], param);
 			break;
 
 		case REDT_rw_buffer:
 		case REDT_rw_structured_buffer:
 		case REDT_rw_byte_address_buffer:
-			ret.func = SetD3D11ShaderParameterGraphicsBufferUAV(uavsrcs_[p_handle.shader_type][p_handle.offset], uavs_[p_handle.shader_type][p_handle.offset], param);
+		case REDT_rasterizer_ordered_buffer:
+		case REDT_rasterizer_ordered_structured_buffer:
+		case REDT_rasterizer_ordered_byte_address_buffer:
+			ret.func = SetD3D11ShaderParameterGraphicsBufferUAV(uavsrcs_[offset], uavs_[offset], uav_init_counts_[offset], param);
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid type");
 		}
 
 		return ret;
 	}
 
-	void D3D11ShaderObject::Bind()
+	void D3D11ShaderObject::Bind(RenderEffect const& effect)
 	{
-		D3D11RenderEngine& re = *checked_cast<D3D11RenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		ID3D11DeviceContextPtr const & d3d_imm_ctx = re.D3DDeviceImmContext();
+		auto& re = checked_cast<D3D11RenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
-		re.VSSetShader(vertex_shader_);
-		re.GSSetShader(geometry_shader_);
-		re.PSSetShader(pixel_shader_);
-		re.CSSetShader(compute_shader_);
-		re.HSSetShader(hull_shader_);
-		re.DSSetShader(domain_shader_);
-
-		for (size_t st = 0; st < ST_NumShaderTypes; ++ st)
+		if (this->Stage(ShaderStage::Compute))
 		{
-			typedef KLAYGE_DECLTYPE(param_binds_[st]) ParamBindsType;
-			KLAYGE_FOREACH(ParamBindsType::reference pb, param_binds_[st])
+			re.CSSetShader(checked_cast<D3D11ShaderStageObject&>(*this->Stage(ShaderStage::Compute)).HwComputeShader());
+		}
+		else
+		{
+			auto const& vs_stage = this->Stage(ShaderStage::Vertex);
+			re.VSSetShader(vs_stage ? checked_cast<D3D11ShaderStageObject&>(*vs_stage).HwVertexShader() : nullptr);
+
+			auto const& ps_stage = this->Stage(ShaderStage::Pixel);
+			re.PSSetShader(ps_stage ? checked_cast<D3D11ShaderStageObject&>(*ps_stage).HwPixelShader() : nullptr);
+
+			ID3D11HullShader* hull_shader = nullptr;
+			ID3D11DomainShader* domain_shader = nullptr;
+			if (this->Stage(ShaderStage::Hull))
+			{
+				hull_shader = checked_cast<D3D11ShaderStageObject&>(*this->Stage(ShaderStage::Hull)).HwHullShader();
+				domain_shader = checked_cast<D3D11ShaderStageObject&>(*this->Stage(ShaderStage::Domain)).HwDomainShader();
+			}
+			re.HSSetShader(hull_shader);
+			re.DSSetShader(domain_shader);
+
+			ShaderStage stream_output_stage = ShaderStage::NumStages;
+			if (this->Stage(ShaderStage::Geometry))
+			{
+				stream_output_stage = ShaderStage::Geometry;
+			}
+			else if (this->Stage(ShaderStage::Domain))
+			{
+				stream_output_stage = ShaderStage::Domain;
+			}
+			else if (this->Stage(ShaderStage::Vertex))
+			{
+				stream_output_stage = ShaderStage::Vertex;
+			}
+			re.GSSetShader((stream_output_stage != ShaderStage::NumStages)
+							   ? checked_cast<D3D11ShaderStageObject&>(*this->Stage(stream_output_stage)).HwGeometryShader()
+							   : nullptr);
+		}
+
+		for (auto const & pbs : param_binds_)
+		{
+			for (auto const & pb : pbs)
 			{
 				pb.func();
 			}
 		}
 
-		for (size_t i = 0; i < all_cbuffs_.size(); ++ i)
+		for (size_t stage_index = 0; stage_index < NumShaderStages; ++stage_index)
 		{
-			all_cbuffs_[i]->Update();
-		}
-
-		for (size_t st = 0; st < ST_NumShaderTypes; ++ st)
-		{
-			if (!srvs_[st].empty())
+			ShaderStage const stage = static_cast<ShaderStage>(stage_index);
+			auto const* shader_stage = checked_cast<D3D11ShaderStageObject*>(this->Stage(static_cast<ShaderStage>(stage)).get());
+			if (shader_stage)
 			{
-				re.SetShaderResources(static_cast<ShaderObject::ShaderType>(st), srvsrcs_[st], srvs_[st]);
-			}
-
-			if (!samplers_[st].empty())
-			{
-				re.SetSamplers(static_cast<ShaderObject::ShaderType>(st), samplers_[st]);
-			}
-
-			if (!d3d11_cbuffs_[st].empty())
-			{
-				re.SetConstantBuffers(static_cast<ShaderObject::ShaderType>(st), d3d11_cbuffs_[st]);
-			}
-		}
-
-		if (!uavs_[ST_ComputeShader].empty())
-		{
-			std::vector<ID3D11UnorderedAccessView*> uavs_ptr(uavs_[ST_ComputeShader].size());
-			for (uint32_t i = 0; i < uavs_[ST_ComputeShader].size(); ++ i)
-			{
-				if (uavsrcs_[ST_ComputeShader][i] != nullptr)
+				if (!srvs_[stage_index].empty())
 				{
-					re.DetachSRV(uavsrcs_[ST_ComputeShader][i], 0, 1);
+					re.SetShaderResources(stage, srvsrcs_[stage_index], srvs_[stage_index]);
 				}
 
-				uavs_ptr[i] = uavs_[ST_ComputeShader][i].get();
-			}
+				if (!samplers_[stage_index].empty())
+				{
+					re.SetSamplers(stage, samplers_[stage_index]);
+				}
 
-			d3d_imm_ctx->CSSetUnorderedAccessViews(0, static_cast<UINT>(uavs_[ST_ComputeShader].size()), &uavs_ptr[0],
-				reinterpret_cast<UINT*>(&uavs_ptr[0]));
+				auto const& cbuff_indices = shader_stage->CBufferIndices();
+				if (!cbuff_indices.empty())
+				{
+					ID3D11Buffer* d3d11_cbuffs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+					for (uint32_t i = 0; i < cbuff_indices.size(); ++i)
+					{
+						auto* cb = effect.CBufferByIndex(cbuff_indices[i]);
+						cb->Update();
+						d3d11_cbuffs[i] = checked_cast<D3D11GraphicsBuffer*>(cb->HWBuff().get())->D3DBuffer();
+					}
+
+					re.SetConstantBuffers(stage, MakeSpan(d3d11_cbuffs, cbuff_indices.size()));
+				}
+			}
+		}
+
+		if (this->Stage(ShaderStage::Compute) && !uavs_.empty())
+		{
+			re.CSSetUnorderedAccessViews(0, static_cast<UINT>(uavs_.size()), &uavs_[0], &uav_init_counts_[0]);
 		}
 	}
 
 	void D3D11ShaderObject::Unbind()
 	{
-		D3D11RenderEngine& re = *checked_cast<D3D11RenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		ID3D11DeviceContextPtr const & d3d_imm_ctx = re.D3DDeviceImmContext();
-
-		if (!uavs_[ST_ComputeShader].empty())
+		if (this->Stage(ShaderStage::Compute) && !uavs_.empty())
 		{
-			std::vector<ID3D11UnorderedAccessView*> uavs(uavs_[ST_ComputeShader].size(), nullptr);
-			d3d_imm_ctx->CSSetUnorderedAccessViews(0, static_cast<UINT>(uavs_[ST_ComputeShader].size()), &uavs[0],
-				reinterpret_cast<UINT*>(&uavs[0]));
+			auto& re = checked_cast<D3D11RenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+
+			std::vector<ID3D11UnorderedAccessView*> uavs(uavs_.size(), nullptr);
+			std::vector<UINT> uav_init_counts(uavs_.size(), 0);
+			re.CSSetUnorderedAccessViews(0, static_cast<UINT>(uavs.size()), &uavs[0], &uav_init_counts[0]);
 		}
+	}
+
+	std::span<uint8_t const> D3D11ShaderObject::VsCode() const
+	{
+		return MakeSpan(checked_cast<D3D11ShaderStageObject&>(*this->Stage(ShaderStage::Vertex)).ShaderCodeBlob());
+	}
+
+	uint32_t D3D11ShaderObject::VsSignature() const
+	{
+		return checked_cast<D3D11VertexShaderStageObject&>(*this->Stage(ShaderStage::Vertex)).VsSignature();
 	}
 }

@@ -1,4 +1,6 @@
 #include <KlayGE/KlayGE.hpp>
+
+#include <KFL/CXX2a/format.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/RenderFactory.hpp>
@@ -12,8 +14,6 @@
 #include <vector>
 #include <string>
 #include <algorithm>
-#include <fstream>
-#include <sstream>
 
 using namespace KlayGE;
 
@@ -31,27 +31,24 @@ namespace
 
 			std::string glsl_ver_str;
 			re.GetCustomAttrib("SHADING_LANGUAGE_VERSION", &glsl_ver_str);
-			if (!glsl_ver_str.empty())
+			if (glsl_ver_str.empty())
+			{
+				glsl_major_ver_ = 0;
+				glsl_minor_ver_ = 0;
+			}
+			else
 			{
 				std::string::size_type const glsl_dot_pos = glsl_ver_str.find(".");
 				glsl_major_ver_ = glsl_ver_str[glsl_dot_pos - 1] - '0';
 				glsl_minor_ver_ = glsl_ver_str[glsl_dot_pos + 1] - '0';
-			}
-			else
-			{
-				glsl_major_ver_ = 0;
-				glsl_minor_ver_ = 0;
 			}
 
 			int num_exts;
 			re.GetCustomAttrib("NUM_FEATURES", &num_exts);
 			for (int i = 0; i < num_exts; ++ i)
 			{
-				std::ostringstream oss;
-				oss << "FEATURE_NAME_" << i;
-
 				std::string name;
-				re.GetCustomAttrib(oss.str(), &name);
+				re.GetCustomAttrib(std::format("FEATURE_NAME_{}", i), &name);
 				std::string::size_type p = name.find("GLES_VERSION_");
 				if (std::string::npos == p)
 				{
@@ -65,24 +62,23 @@ namespace
 			}
 		}
 
-		std::vector<boost::any> store_to_py()
+		std::vector<ScriptVariablePtr> StoreToPy(ScriptModule const& module)
 		{
-			std::vector<boost::any> ret;
+			std::vector<ScriptVariablePtr> ret;
 
-			ret.push_back(vendor_);
-			ret.push_back(renderer_);
-			ret.push_back(major_ver_);
-			ret.push_back(minor_ver_);
-			ret.push_back(glsl_major_ver_);
-			ret.push_back(glsl_minor_ver_);
+			ret.push_back(module.MakeVariable(vendor_));
+			ret.push_back(module.MakeVariable(renderer_));
+			ret.push_back(module.MakeVariable(major_ver_));
+			ret.push_back(module.MakeVariable(minor_ver_));
+			ret.push_back(module.MakeVariable(glsl_major_ver_));
+			ret.push_back(module.MakeVariable(glsl_minor_ver_));
 
 			std::string ext_str;
-			for (std::vector<std::string>::const_iterator iter = extensions_.begin();
-					iter != extensions_.end(); ++ iter)
+			for (auto const & ext : extensions_)
 			{
-				ext_str += *iter + ' ';
+				ext_str += ext + ' ';
 			}
-			ret.push_back(ext_str);
+			ret.push_back(module.MakeVariable(ext_str));
 
 			return ret;
 		}
@@ -137,11 +133,11 @@ int main()
 	GLESCompatibilityApp app;
 	app.Create();
 
-	information info;
-	std::vector<boost::any> for_py = info.store_to_py();
-
 	ScriptEngine& scriptEng = Context::Instance().ScriptFactoryInstance().ScriptEngineInstance();
 	ScriptModulePtr module = scriptEng.CreateModule("GLESCompatibility");
+
+	information info;
+	std::vector<ScriptVariablePtr> for_py = info.StoreToPy(*module);
 
 	module->Call("gles_compatibility", for_py);
 

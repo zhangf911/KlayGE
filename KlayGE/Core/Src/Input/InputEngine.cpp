@@ -27,40 +27,10 @@
 
 namespace KlayGE
 {
-	class NullInputEngine : public InputEngine
-	{
-	public:
-		std::wstring const & Name() const
-		{
-			static std::wstring name(L"Null Input Engine");
-			return name;
-		}
-
-		void EnumDevices()
-		{
-		}
-
-	private:
-		virtual void DoSuspend() KLAYGE_OVERRIDE
-		{
-		}
-		virtual void DoResume() KLAYGE_OVERRIDE
-		{
-		}
-	};
-
 	// 析构函数
 	//////////////////////////////////////////////////////////////////////////////////
 	InputEngine::~InputEngine()
 	{
-	}
-
-	// 返回空对象
-	//////////////////////////////////////////////////////////////////////////////////
-	InputEnginePtr InputEngine::NullObject()
-	{
-		static InputEnginePtr obj = MakeSharedPtr<NullInputEngine>();
-		return obj;
 	}
 
 	// 设置动作格式
@@ -68,7 +38,7 @@ namespace KlayGE
 	void InputEngine::ActionMap(InputActionMap const & actionMap, action_handler_t handler)
 	{
 		// 保存新的动作格式
-		action_handlers_.push_back(std::make_pair(actionMap, handler));
+		action_handlers_.emplace_back(actionMap, handler);
 
 		if (devices_.empty())
 		{
@@ -78,8 +48,7 @@ namespace KlayGE
 		// 对当前设备应用新的动作映射
 		for (uint32_t id = 0; id < action_handlers_.size(); ++ id)
 		{
-			typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-			KLAYGE_FOREACH(DevicesType::reference device, devices_)
+			for (auto const & device : devices_)
 			{
 				device->ActionMap(id, action_handlers_[id].first);
 			}
@@ -102,29 +71,22 @@ namespace KlayGE
 		{
 			timer_.restart();
 
-			typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-			KLAYGE_FOREACH(DevicesType::reference device, devices_)
+			for (auto const & device : devices_)
 			{
 				device->UpdateInputs();
 			}
 
 			for (uint32_t id = 0; id < action_handlers_.size(); ++ id)
 			{
-#ifdef KLAYGE_DONT_USE_BOOST_FLAT_MAP
-				std::map<uint16_t, InputActionParamPtr> actions;
-#else
 				boost::container::flat_map<uint16_t, InputActionParamPtr> actions;
-#endif
 
 				// 访问所有设备
-				typedef KLAYGE_DECLTYPE(devices_) DevicesType;
-				KLAYGE_FOREACH(DevicesType::reference device, devices_)
+				for (auto const & device : devices_)
 				{
 					InputActionsType const theAction(device->UpdateActionMap(id));
 
 					// 去掉重复的动作
-					typedef KLAYGE_DECLTYPE(theAction) ActionType;
-					KLAYGE_FOREACH(ActionType::const_reference act, theAction)
+					for (auto const & act : theAction)
 					{
 						if (actions.find(act.first) == actions.end())
 						{

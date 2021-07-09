@@ -27,12 +27,12 @@ namespace KlayGE
 {
 	// 高度图地形生成
 	/////////////////////////////////////////////////////////////////////////////////
-	class HeightMap
+	class HeightMap final : boost::noncopyable
 	{
 	public:
 		void BuildTerrain(float start_x, float start_y, float end_x, float end_y, float span_x, float span_y,
 			std::vector<float3>& vertices, std::vector<uint16_t>& indices,
-			function<float(float, float)> HeightFunc);
+			std::function<float(float, float)> HeightFunc);
 	};
 }
 

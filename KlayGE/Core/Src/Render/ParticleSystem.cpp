@@ -29,6 +29,11 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
+
+#include <KFL/CXX2a/format.hpp>
+#include <KFL/ErrorHandling.hpp>
+#include <KFL/StringUtil.hpp>
+#include <KlayGE/FrameBuffer.hpp>
 #include <KlayGE/Texture.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/RenderEngine.hpp>
@@ -39,20 +44,10 @@
 #include <KlayGE/ResLoader.hpp>
 #include <KFL/XMLDom.hpp>
 #include <KlayGE/DeferredRenderingLayer.hpp>
+#include <KFL/Hash.hpp>
 
 #include <fstream>
-
-#include <boost/functional/hash.hpp>
-#include <boost/algorithm/string/split.hpp>
-#include <boost/algorithm/string/trim.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4702)
-#endif
-#include <boost/lexical_cast.hpp>
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
+#include <string>
 
 #include <KlayGE/ParticleSystem.hpp>
 
@@ -93,43 +88,50 @@ namespace
 				std::vector<KlayGE::float2> mass_over_life_ctrl_pts;
 				std::vector<KlayGE::float2> opacity_over_life_ctrl_pts;
 			};
-			shared_ptr<ParticleSystemData> ps_data;
+			std::shared_ptr<ParticleSystemData> ps_data;
 
-			shared_ptr<ParticleSystemPtr> ps;
+			std::shared_ptr<ParticleSystemPtr> ps;
 		};
 
 	public:
-		ParticleSystemLoadingDesc(std::string const & res_name)
+		explicit ParticleSystemLoadingDesc(std::string_view res_name)
 		{
-			ps_desc_.res_name = res_name;
+			ps_desc_.res_name = std::string(res_name);
 			ps_desc_.ps_data = MakeSharedPtr<ParticleSystemDesc::ParticleSystemData>();
 			ps_desc_.ps = MakeSharedPtr<ParticleSystemPtr>();
 		}
 
-		uint64_t Type() const
+		uint64_t Type() const override
 		{
 			static uint64_t const type = CT_HASH("ParticleSystemLoadingDesc");
 			return type;
 		}
 
-		bool StateLess() const
+		bool StateLess() const override
 		{
 			return false;
 		}
 
-		void SubThreadStage()
+		void SubThreadStage() override
 		{
+			std::lock_guard<std::mutex> lock(main_thread_stage_mutex_);
+
+			if (*ps_desc_.ps)
+			{
+				return;
+			}
+
 			ResIdentifierPtr psmm_input = ResLoader::Instance().Open(ps_desc_.res_name);
 
 			KlayGE::XMLDocument doc;
-			XMLNodePtr root = doc.Parse(psmm_input);
+			XMLNodePtr root = doc.Parse(*psmm_input);
 
 			{
 				XMLNodePtr particle_node = root->FirstNode("particle");
 				{
 					XMLNodePtr alpha_node = particle_node->FirstNode("alpha");
-					ps_desc_.ps_data->particle_alpha_from_tex = alpha_node->Attrib("from")->ValueString();
-					ps_desc_.ps_data->particle_alpha_to_tex = alpha_node->Attrib("to")->ValueString();
+					ps_desc_.ps_data->particle_alpha_from_tex = std::string(alpha_node->Attrib("from")->ValueString());
+					ps_desc_.ps_data->particle_alpha_to_tex = std::string(alpha_node->Attrib("to")->ValueString());
 				}
 				{
 					XMLNodePtr color_node = particle_node->FirstNode("color");
@@ -138,14 +140,14 @@ namespace
 						XMLAttributePtr attr = color_node->Attrib("from");
 						if (attr)
 						{
-							std::vector<std::string> strs;
-							boost::algorithm::split(strs, attr->ValueString(), boost::is_any_of(" "));
+							std::string_view const value_str = attr->ValueString();
+							std::vector<std::string_view> strs = StringUtil::Split(value_str, StringUtil::EqualTo(' '));
 							for (size_t i = 0; i < 3; ++ i)
 							{
 								if (i < strs.size())
 								{
-									boost::algorithm::trim(strs[i]);
-									from[i] = static_cast<float>(atof(strs[i].c_str()));
+									strs[i] = StringUtil::Trim(strs[i]);
+									from[i] = stof(std::string(strs[i]));
 								}
 								else
 								{
@@ -160,14 +162,14 @@ namespace
 						attr = color_node->Attrib("to");
 						if (attr)
 						{
-							std::vector<std::string> strs;
-							boost::algorithm::split(strs, attr->ValueString(), boost::is_any_of(" "));
+							std::string_view const value_str = attr->ValueString();
+							std::vector<std::string_view> strs = StringUtil::Split(value_str, StringUtil::EqualTo(' '));
 							for (size_t i = 0; i < 3; ++ i)
 							{
 								if (i < strs.size())
 								{
-									boost::algorithm::trim(strs[i]);
-									to[i] = static_cast<float>(atof(strs[i].c_str()));
+									strs[i] = StringUtil::Trim(strs[i]);
+									to[i] = stof(std::string(strs[i]));
 								}
 								else
 								{
@@ -187,7 +189,7 @@ namespace
 				XMLAttributePtr type_attr = emitter_node->Attrib("type");
 				if (type_attr)
 				{
-					ps_desc_.ps_data->emitter_type = type_attr->ValueString();
+					ps_desc_.ps_data->emitter_type = std::string(type_attr->ValueString());
 				}
 				else
 				{
@@ -215,14 +217,14 @@ namespace
 					XMLAttributePtr attr = pos_node->Attrib("min");
 					if (attr)
 					{
-						std::vector<std::string> strs;
-						boost::algorithm::split(strs, attr->ValueString(), boost::is_any_of(" "));
+						std::string_view const value_str = attr->ValueString();
+						std::vector<std::string_view> strs = StringUtil::Split(value_str, StringUtil::EqualTo(' '));
 						for (size_t i = 0; i < 3; ++ i)
 						{
 							if (i < strs.size())
 							{
-								boost::algorithm::trim(strs[i]);
-								min_pos[i] = static_cast<float>(atof(strs[i].c_str()));
+								strs[i] = StringUtil::Trim(strs[i]);
+								min_pos[i] = stof(std::string(strs[i]));
 							}
 							else
 							{
@@ -236,14 +238,14 @@ namespace
 					attr = pos_node->Attrib("max");
 					if (attr)
 					{
-						std::vector<std::string> strs;
-						boost::algorithm::split(strs, attr->ValueString(), boost::is_any_of(" "));
+						std::string_view const value_str = attr->ValueString();
+						std::vector<std::string_view> strs = StringUtil::Split(value_str, StringUtil::EqualTo(' '));
 						for (size_t i = 0; i < 3; ++ i)
 						{
 							if (i < strs.size())
 							{
-								boost::algorithm::trim(strs[i]);
-								max_pos[i] = static_cast<float>(atof(strs[i].c_str()));
+								strs[i] = StringUtil::Trim(strs[i]);
+								max_pos[i] = stof(std::string(strs[i]));
 							}
 							else
 							{
@@ -281,7 +283,7 @@ namespace
 				XMLAttributePtr type_attr = updater_node->Attrib("type");
 				if (type_attr)
 				{
-					ps_desc_.ps_data->updater_type = type_attr->ValueString();
+					ps_desc_.ps_data->updater_type = std::string(type_attr->ValueString());
 				}
 				else
 				{
@@ -302,7 +304,8 @@ namespace
 						}
 
 						XMLAttributePtr attr = node->Attrib("name");
-						size_t const name_hash = RT_HASH(attr->ValueString().c_str());
+						std::string_view const name = attr->ValueString();
+						size_t const name_hash = HashRange(name.begin(), name.end());
 						if (CT_HASH("size_over_life") == name_hash)
 						{
 							ps_desc_.ps_data->size_over_life_ctrl_pts = xys;
@@ -323,11 +326,54 @@ namespace
 			RenderDeviceCaps const & caps = rf.RenderEngineInstance().DeviceCaps();
 			if (caps.multithread_res_creating_support)
 			{
-				this->MainThreadStage();
+				this->MainThreadStageNoLock();
 			}
 		}
 
-		shared_ptr<void> MainThreadStage()
+		void MainThreadStage() override
+		{
+			std::lock_guard<std::mutex> lock(main_thread_stage_mutex_);
+			this->MainThreadStageNoLock();
+		}
+
+		bool HasSubThreadStage() const override
+		{
+			return true;
+		}
+
+		bool Match(ResLoadingDesc const & rhs) const override
+		{
+			if (this->Type() == rhs.Type())
+			{
+				ParticleSystemLoadingDesc const & psld = static_cast<ParticleSystemLoadingDesc const &>(rhs);
+				return (ps_desc_.res_name == psld.ps_desc_.res_name);
+			}
+			return false;
+		}
+
+		void CopyDataFrom(ResLoadingDesc const & rhs) override
+		{
+			BOOST_ASSERT(this->Type() == rhs.Type());
+
+			ParticleSystemLoadingDesc const & psld = static_cast<ParticleSystemLoadingDesc const &>(rhs);
+			ps_desc_.res_name = psld.ps_desc_.res_name;
+			ps_desc_.ps_data = psld.ps_desc_.ps_data;
+			ps_desc_.ps = psld.ps_desc_.ps;
+		}
+
+		std::shared_ptr<void> CloneResourceFrom(std::shared_ptr<void> const & resource) override
+		{
+			ParticleSystemPtr rhs_pp = std::static_pointer_cast<ParticleSystem>(resource);
+			return std::static_pointer_cast<void>(rhs_pp->Clone());
+		}
+
+		std::shared_ptr<void> Resource() const override
+		{
+			return *ps_desc_.ps;
+		}
+
+	private:
+		void MainThreadStageNoLock()
 		{
 			if (!*ps_desc_.ps)
 			{
@@ -358,42 +404,11 @@ namespace
 
 				*ps_desc_.ps = ps;
 			}
-			return static_pointer_cast<void>(*ps_desc_.ps);
-		}
-
-		bool HasSubThreadStage() const
-		{
-			return true;
-		}
-
-		bool Match(ResLoadingDesc const & rhs) const
-		{
-			if (this->Type() == rhs.Type())
-			{
-				ParticleSystemLoadingDesc const & psld = static_cast<ParticleSystemLoadingDesc const &>(rhs);
-				return (ps_desc_.res_name == psld.ps_desc_.res_name);
-			}
-			return false;
-		}
-
-		void CopyDataFrom(ResLoadingDesc const & rhs)
-		{
-			BOOST_ASSERT(this->Type() == rhs.Type());
-
-			ParticleSystemLoadingDesc const & psld = static_cast<ParticleSystemLoadingDesc const &>(rhs);
-			ps_desc_.res_name = psld.ps_desc_.res_name;
-			ps_desc_.ps_data = psld.ps_desc_.ps_data;
-			ps_desc_.ps = psld.ps_desc_.ps;
-		}
-
-		shared_ptr<void> CloneResourceFrom(shared_ptr<void> const & resource)
-		{
-			ParticleSystemPtr rhs_pp = static_pointer_cast<ParticleSystem>(resource);
-			return static_pointer_cast<void>(rhs_pp->Clone());
 		}
 
 	private:
 		ParticleSystemDesc ps_desc_;
+		std::mutex main_thread_stage_mutex_;
 	};
 	
 #ifdef KLAYGE_HAS_STRUCT_PACK
@@ -408,29 +423,33 @@ namespace
 		float life_factor;
 		float alpha;
 	};
+	KLAYGE_STATIC_ASSERT(sizeof(ParticleInstance) == 32);
 #ifdef KLAYGE_HAS_STRUCT_PACK
 #pragma pack(pop)
 #endif
 
-	class RenderParticles : public RenderableHelper
+	class RenderParticles : public Renderable
 	{
 	public:
 		explicit RenderParticles(bool gs_support)
-			: RenderableHelper(L"Particles")
+			: Renderable(L"Particles")
 		{
 			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
-			rl_ = rf.MakeRenderLayout();
+			effect_ = SyncLoadRenderEffect("Particle.fxml");
+
+			rls_[0] = rf.MakeRenderLayout();
 			if (gs_support)
 			{
-				rl_->TopologyType(RenderLayout::TT_PointList);
+				rls_[0]->TopologyType(RenderLayout::TT_PointList);
 
-				GraphicsBufferPtr pos_vb = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_CPU_Write, nullptr);
-				pos_vb->Resize(sizeof(ParticleInstance));
-				rl_->BindVertexStream(pos_vb, KlayGE::make_tuple(vertex_element(VEU_Position, 0, EF_ABGR32F),
-					vertex_element(VEU_TextureCoord, 0, EF_ABGR32F)));
+				GraphicsBufferPtr pos_vb = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_CPU_Write,
+					sizeof(ParticleInstance), nullptr);
+				rls_[0]->BindVertexStream(pos_vb,
+					MakeSpan({VertexElement(VEU_Position, 0, EF_ABGR32F), VertexElement(VEU_TextureCoord, 0, EF_ABGR32F)}));
 
-				simple_forward_tech_ = SyncLoadRenderEffect("Particle.fxml")->TechniqueByName("ParticleWithGS");
+				simple_forward_tech_ = effect_->TechniqueByName("ParticleWithGS");
+				vdm_tech_ = effect_->TechniqueByName("ParticleWithGSVDM");
 			}
 			else
 			{
@@ -447,59 +466,54 @@ namespace
 					0, 1, 2, 3
 				};
 
-				rl_->TopologyType(RenderLayout::TT_TriangleStrip);
+				rls_[0]->TopologyType(RenderLayout::TT_TriangleStrip);
 
-				ElementInitData init_data;
-				init_data.row_pitch = sizeof(texs);
-				init_data.slice_pitch = 0;
-				init_data.data = texs;
-				GraphicsBufferPtr tex_vb = rf.MakeVertexBuffer(BU_Static, EAH_GPU_Read | EAH_Immutable, &init_data);
-				rl_->BindVertexStream(tex_vb, KlayGE::make_tuple(vertex_element(VEU_Position, 0, EF_GR32F)),
+				GraphicsBufferPtr tex_vb = rf.MakeVertexBuffer(BU_Static, EAH_GPU_Read | EAH_Immutable,
+					sizeof(texs), texs);
+				rls_[0]->BindVertexStream(tex_vb, VertexElement(VEU_Position, 0, EF_GR32F),
 					RenderLayout::ST_Geometry, 0);
 
-				GraphicsBufferPtr pos_vb = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_CPU_Write, nullptr);
-				pos_vb->Resize(sizeof(ParticleInstance));
-				rl_->BindVertexStream(pos_vb,
-					KlayGE::make_tuple(vertex_element(VEU_TextureCoord, 0, EF_ABGR32F),
-						vertex_element(VEU_TextureCoord, 1, EF_ABGR32F)),
+				GraphicsBufferPtr pos_vb = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_CPU_Write,
+					sizeof(ParticleInstance), nullptr);
+				rls_[0]->BindVertexStream(pos_vb,
+					MakeSpan({VertexElement(VEU_TextureCoord, 0, EF_ABGR32F), VertexElement(VEU_TextureCoord, 1, EF_ABGR32F)}),
 					RenderLayout::ST_Instance);
 
-				init_data.row_pitch = sizeof(indices);
-				init_data.slice_pitch = 0;
-				init_data.data = indices;
-				GraphicsBufferPtr ib = rf.MakeIndexBuffer(BU_Static, EAH_GPU_Read | EAH_Immutable, &init_data);
-				rl_->BindIndexStream(ib, EF_R16UI);
+				GraphicsBufferPtr ib = rf.MakeIndexBuffer(BU_Static, EAH_GPU_Read | EAH_Immutable,
+					sizeof(indices), indices);
+				rls_[0]->BindIndexStream(ib, EF_R16UI);
 
-				simple_forward_tech_ = SyncLoadRenderEffect("Particle.fxml")->TechniqueByName("Particle");
+				simple_forward_tech_ = effect_->TechniqueByName("Particle");
+				vdm_tech_ = effect_->TechniqueByName("ParticleVDM");
 			}
 			technique_ = simple_forward_tech_;
 
-			effect_attrs_ |= EA_SimpleForward;
+			effect_attrs_ |= EA_VDM;
 		}
 
 		void SceneDepthTexture(TexturePtr const & tex)
 		{
-			*(technique_->Effect().ParameterByName("depth_tex")) = tex;
+			*(effect_->ParameterByName("depth_tex")) = tex;
 		}
 
 		void ParticleColorFrom(Color const & clr)
 		{
-			*(technique_->Effect().ParameterByName("particle_color_from")) = float3(clr.r(), clr.g(), clr.b());
+			*(effect_->ParameterByName("particle_color_from")) = float3(clr.r(), clr.g(), clr.b());
 		}
 
 		void ParticleColorTo(Color const & clr)
 		{
-			*(technique_->Effect().ParameterByName("particle_color_to")) = float3(clr.r(), clr.g(), clr.b());
+			*(effect_->ParameterByName("particle_color_to")) = float3(clr.r(), clr.g(), clr.b());
 		}
 
 		void ParticleAlphaFrom(TexturePtr const & tex)
 		{
-			*(technique_->Effect().ParameterByName("particle_alpha_from_tex")) = tex;
+			*(effect_->ParameterByName("particle_alpha_from_tex")) = tex;
 		}
 
 		void ParticleAlphaTo(TexturePtr const & tex)
 		{
-			*(technique_->Effect().ParameterByName("particle_alpha_to_tex")) = tex;
+			*(effect_->ParameterByName("particle_alpha_to_tex")) = tex;
 		}
 
 		void OnRenderBegin()
@@ -509,18 +523,18 @@ namespace
 			float4x4 const & view = camera.ViewMatrix();
 			float4x4 const & proj = camera.ProjMatrix();
 
-			*(technique_->Effect().ParameterByName("model_view")) = model_mat_ * view;
-			*(technique_->Effect().ParameterByName("proj")) = proj;
-			*(technique_->Effect().ParameterByName("far_plane")) = camera.FarPlane();
+			*(effect_->ParameterByName("model_view")) = model_mat_ * view;
+			*(effect_->ParameterByName("proj")) = proj;
+			*(effect_->ParameterByName("far_plane")) = camera.FarPlane();
 
 			float scale_x = sqrt(model_mat_(0, 0) * model_mat_(0, 0) + model_mat_(0, 1) * model_mat_(0, 1) + model_mat_(0, 2) * model_mat_(0, 2));
 			float scale_y = sqrt(model_mat_(1, 0) * model_mat_(1, 0) + model_mat_(1, 1) * model_mat_(1, 1) + model_mat_(1, 2) * model_mat_(1, 2));
-			*(technique_->Effect().ParameterByName("point_radius")) = 0.08f * std::max(scale_x, scale_y);
+			*(effect_->ParameterByName("point_radius")) = 0.08f * std::max(scale_x, scale_y);
 
-			DeferredRenderingLayerPtr const & drl = Context::Instance().DeferredRenderingLayerInstance();
+			auto drl = Context::Instance().DeferredRenderingLayerInstance();
 			if (drl)
 			{
-				*(technique_->Effect().ParameterByName("depth_tex")) = drl->CurrFrameDepthTex(drl->ActiveViewport());
+				*(effect_->ParameterByName("depth_tex")) = drl->CurrFrameResolvedDepthTex(drl->ActiveViewport());
 			}
 		}
 
@@ -529,27 +543,20 @@ namespace
 			pos_aabb_ = pos_aabb;
 		}
 
-		using RenderableHelper::PosBound;
-	};
-
-	class ParticleCmp
-	{
-	public:
-		bool operator()(std::pair<uint32_t, float> const & lhs, std::pair<uint32_t, float> const & rhs) const
-		{
-			return lhs.second > rhs.second;
-		}
+		using Renderable::PosBound;
 	};
 }
 
 namespace KlayGE
 {
-	ParticleEmitter::ParticleEmitter(SceneObjectPtr const & ps)
-			: ps_(checked_pointer_cast<ParticleSystem>(ps)),
+	ParticleEmitter::ParticleEmitter(ParticleSystemPtr const& ps)
+			: ps_(ps),
 				model_mat_(float4x4::Identity()),
 				min_spin_(-PI / 2), max_spin_(+PI / 2)
 	{
 	}
+
+	ParticleEmitter::~ParticleEmitter() noexcept = default;
 
 	uint32_t ParticleEmitter::Update(float elapsed_time)
 	{
@@ -562,7 +569,7 @@ namespace KlayGE
 
 		rhs->emit_freq_ = emit_freq_;
 
-		rhs->model_mat_ = model_mat_;
+		rhs->ModelMatrix(model_mat_);
 		rhs->emit_angle_ = emit_angle_;
 
 		rhs->min_pos_ = min_pos_;
@@ -578,10 +585,12 @@ namespace KlayGE
 	}
 
 
-	ParticleUpdater::ParticleUpdater(SceneObjectPtr const & ps)
-		: ps_(checked_pointer_cast<ParticleSystem>(ps))
+	ParticleUpdater::ParticleUpdater(ParticleSystemPtr const& ps)
+		: ps_(ps)
 	{
 	}
+
+	ParticleUpdater::~ParticleUpdater() noexcept = default;
 
 	void ParticleUpdater::DoClone(ParticleUpdaterPtr const & rhs)
 	{
@@ -589,16 +598,49 @@ namespace KlayGE
 	}
 
 
-	ParticleSystem::ParticleSystem(uint32_t max_num_particles)
-		: SceneObjectHelper(SOA_Moveable),
+	ParticleSystem::ParticleSystem(uint32_t max_num_particles, bool sort_particles)
+		: root_node_(MakeSharedPtr<SceneNode>(L"ParticleSystemRootNode", SceneNode::SOA_Moveable | SceneNode::SOA_NotCastShadow)),
 			particles_(max_num_particles),
-			gravity_(0.5f), force_(0, 0, 0), media_density_(0.0f)
+			gravity_(0.5f), force_(0, 0, 0), media_density_(0.0f),
+			sort_particles_(sort_particles)
 	{
 		this->ClearParticles();
 
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 		gs_support_ = rf.RenderEngineInstance().DeviceCaps().gs_support;
-		renderable_ = MakeSharedPtr<RenderParticles>(gs_support_);
+		render_particles_ = MakeSharedPtr<RenderParticles>(gs_support_);
+		root_node_->AddComponent(MakeSharedPtr<RenderableComponent>(render_particles_));
+
+		root_node_->OnMainThreadUpdate().Connect([this](SceneNode& node, float app_time, float elapsed_time)
+			{
+				KFL_UNUSED(node);
+				KFL_UNUSED(app_time);
+				KFL_UNUSED(elapsed_time);
+
+				auto& rf = Context::Instance().RenderFactoryInstance();
+				auto const& caps = rf.RenderEngineInstance().DeviceCaps();
+				if (!caps.arbitrary_multithread_rendering_support)
+				{
+					std::lock_guard<std::mutex> lock(actived_particles_mutex_);
+					this->UpdateParticleBufferNoLock();
+				}
+			});
+		root_node_->OnSubThreadUpdate().Connect([this](SceneNode& node, float app_time, float elapsed_time)
+			{
+				KFL_UNUSED(node);
+				KFL_UNUSED(app_time);
+
+				std::lock_guard<std::mutex> lock(actived_particles_mutex_);
+
+				this->UpdateParticlesNoLock(elapsed_time);
+
+				auto& rf = Context::Instance().RenderFactoryInstance();
+				auto const& caps = rf.RenderEngineInstance().DeviceCaps();
+				if (caps.arbitrary_multithread_rendering_support)
+				{
+					this->UpdateParticleBufferNoLock();
+				}
+			});
 	}
 
 	ParticleSystemPtr ParticleSystem::Clone()
@@ -629,7 +671,7 @@ namespace KlayGE
 		return ret;
 	}
 
-	ParticleEmitterPtr ParticleSystem::MakeEmitter(std::string const & name)
+	ParticleEmitterPtr ParticleSystem::MakeEmitter(std::string_view name)
 	{
 		ParticleEmitterPtr ret;
 		if ("point" == name)
@@ -638,13 +680,13 @@ namespace KlayGE
 		}
 		else
 		{
-			BOOST_ASSERT(false);
+			KFL_UNREACHABLE("Unsupported emitter type");
 		}
 
 		return ret;
 	}
 
-	ParticleUpdaterPtr ParticleSystem::MakeUpdater(std::string const & name)
+	ParticleUpdaterPtr ParticleSystem::MakeUpdater(std::string_view name)
 	{
 		ParticleUpdaterPtr ret;
 		if ("polyline" == name)
@@ -653,7 +695,7 @@ namespace KlayGE
 		}
 		else
 		{
-			BOOST_ASSERT(false);
+			KFL_UNREACHABLE("Unsupported updater type");
 		}
 
 		return ret;
@@ -666,7 +708,7 @@ namespace KlayGE
 
 	void ParticleSystem::DelEmitter(ParticleEmitterPtr const & emitter)
 	{
-		KLAYGE_AUTO(iter, std::find(emitters_.begin(), emitters_.end(), emitter));
+		auto iter = std::find(emitters_.begin(), emitters_.end(), emitter);
 		if (iter != emitters_.end())
 		{
 			emitters_.erase(iter);
@@ -685,7 +727,7 @@ namespace KlayGE
 
 	void ParticleSystem::DelUpdater(ParticleUpdaterPtr const & updater)
 	{
-		KLAYGE_AUTO(iter, std::find(updaters_.begin(), updaters_.end(), updater));
+		auto iter = std::find(updaters_.begin(), updaters_.end(), updater);
 		if (iter != updaters_.end())
 		{
 			updaters_.erase(iter);
@@ -697,34 +739,52 @@ namespace KlayGE
 		updaters_.clear();
 	}
 
+	uint32_t ParticleSystem::NumActiveParticles() const
+	{
+		std::lock_guard<std::mutex> lock(actived_particles_mutex_);
+		return static_cast<uint32_t>(actived_particles_.size());
+	}
+
+	uint32_t ParticleSystem::GetActiveParticleIndex(uint32_t i) const
+	{
+		std::lock_guard<std::mutex> lock(actived_particles_mutex_);
+		return actived_particles_[i].first;
+	}
+
 	void ParticleSystem::ClearParticles()
 	{
-		typedef KLAYGE_DECLTYPE(particles_) ParticlesType;
-		KLAYGE_FOREACH(ParticlesType::reference particle, particles_)
+		for (auto& particle : particles_)
 		{
 			particle.life = 0;
 		}
 	}
 
-	void ParticleSystem::SubThreadUpdate(float /*app_time*/, float elapsed_time)
+	void ParticleSystem::UpdateParticlesNoLock(float elapsed_time)
 	{
-		KLAYGE_AUTO(emitter_iter, emitters_.begin());
+		auto emitter_iter = emitters_.begin();
 		uint32_t new_particle = (*emitter_iter)->Update(elapsed_time);
-		
-		float4x4 view_mat = Context::Instance().AppInstance().ActiveCamera().ViewMatrix();
-		std::vector<std::pair<uint32_t, float> > active_particles;
+
+		auto& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		auto const& camera = *re.DefaultFrameBuffer()->Viewport()->Camera();
+		float4x4 const& view_mat = camera.ViewMatrix();
+
+		actived_particles_.clear();
 
 		float3 min_bb(+1e10f, +1e10f, +1e10f);
 		float3 max_bb(-1e10f, -1e10f, -1e10f);
-		
+
+		for (auto const & updater : updaters_)
+		{
+			updater->SnapParams();
+		}
+
 		for (uint32_t i = 0; i < particles_.size(); ++ i)
 		{
 			Particle& particle = particles_[i];
 
-			typedef KLAYGE_DECLTYPE(updaters_) UpdatersType;
 			if (particle.life > 0)
 			{
-				KLAYGE_FOREACH(UpdatersType::reference updater, updaters_)
+				for (auto const & updater : updaters_)
 				{
 					updater->Update(particle, elapsed_time);
 				}
@@ -734,7 +794,7 @@ namespace KlayGE
 				if (new_particle > 0)
 				{
 					(*emitter_iter)->Emit(particle);
-					KLAYGE_FOREACH(UpdatersType::reference updater, updaters_)
+					for (auto const & updater : updaters_)
 					{
 						updater->Update(particle, 0);
 					}
@@ -756,61 +816,95 @@ namespace KlayGE
 			if (particle.life > 0)
 			{
 				float3 const & pos = particle.pos;
-				float p_to_v = (pos.x() * view_mat(0, 2) + pos.y() * view_mat(1, 2) + pos.z() * view_mat(2, 2) + view_mat(3, 2))
-					/ (pos.x() * view_mat(0, 3) + pos.y() * view_mat(1, 3) + pos.z() * view_mat(2, 3) + view_mat(3, 3));
 
-				active_particles.push_back(std::make_pair(i, p_to_v));
+				float depth_es;
+				if (sort_particles_)
+				{
+					float4 const pos4(pos.x(), pos.y(), pos.z(), 1);
+					float4 const z_row = view_mat.Col(2);
+					float4 const w_row = view_mat.Col(3);
+
+					depth_es = MathLib::dot(pos4, z_row) / MathLib::dot(pos4, w_row);
+				}
+				else
+				{
+					depth_es = 0;
+				}
+
+				actived_particles_.emplace_back(i, depth_es);
 
 				min_bb = MathLib::minimize(min_bb, pos);
 				max_bb = MathLib::maximize(min_bb, pos);
 			}
 		}
 
-		if (!active_particles.empty())
+		if (!actived_particles_.empty())
 		{
-			std::sort(active_particles.begin(), active_particles.end(), ParticleCmp());
+			if (sort_particles_)
+			{
+				std::sort(actived_particles_.begin(), actived_particles_.end(),
+					[](std::pair<uint32_t, float> const & lhs, std::pair<uint32_t, float> const & rhs)
+					{
+						return lhs.second > rhs.second;
+					});
+			}
 
-			checked_pointer_cast<RenderParticles>(renderable_)->PosBound(AABBox(min_bb, max_bb));
+			checked_cast<RenderParticles&>(*render_particles_).PosBound(AABBox(min_bb, max_bb));
 		}
-
-		unique_lock<mutex> lock(update_mutex_);
-		active_particles_ = active_particles;
 	}
 
-	bool ParticleSystem::MainThreadUpdate(float app_time, float elapsed_time)
+	void ParticleSystem::UpdateParticleBufferNoLock()
 	{
-		UNREF_PARAM(app_time);
-		UNREF_PARAM(elapsed_time);
-
-		unique_lock<mutex> lock(update_mutex_);
-
-		uint32_t const num_active_particles = static_cast<uint32_t>(active_particles_.size());
-
-		RenderLayoutPtr const & rl = renderable_->GetRenderLayout();
-		GraphicsBufferPtr instance_gb;
-		if (gs_support_)
+		if (!actived_particles_.empty())
 		{
-			instance_gb = rl->GetVertexStream(0);
-		}
-		else
-		{
-			instance_gb = rl->InstanceStream();
+			RenderLayout& rl = render_particles_->GetRenderLayout();
 
-			for (uint32_t i = 0; i < rl->NumVertexStreams(); ++ i)
+			GraphicsBufferPtr instance_gb;
+			if (gs_support_)
 			{
-				rl->VertexStreamFrequencyDivider(i, RenderLayout::ST_Geometry, num_active_particles);
+				instance_gb = rl.GetVertexStream(0);
 			}
-		}
+			else
+			{
+				instance_gb = rl.InstanceStream();
+			}
 
-		if (!active_particles_.empty())
-		{
-			instance_gb->Resize(sizeof(ParticleInstance) * num_active_particles);
+			uint32_t const num_active_particles = static_cast<uint32_t>(actived_particles_.size());
+			uint32_t const new_instance_size = num_active_particles * sizeof(ParticleInstance);
+			if (!instance_gb || (instance_gb->Size() < new_instance_size))
+			{
+				RenderFactory& rf = Context::Instance().RenderFactoryInstance();
+				instance_gb = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_CPU_Write,
+					new_instance_size, nullptr);
+
+				if (gs_support_)
+				{
+					rl.SetVertexStream(0, instance_gb);
+				}
+				else
+				{
+					rl.InstanceStream(instance_gb);
+				}
+			}
+
+			if (gs_support_)
+			{
+				rl.NumVertices(num_active_particles);
+			}
+			else
+			{
+				for (uint32_t i = 0; i < rl.NumVertexStreams(); ++ i)
+				{
+					rl.VertexStreamFrequencyDivider(i, RenderLayout::ST_Geometry, num_active_particles);
+				}
+			}
+
 			{
 				GraphicsBuffer::Mapper mapper(*instance_gb, BA_Write_Only);
 				ParticleInstance* instance_data = mapper.Pointer<ParticleInstance>();
 				for (uint32_t i = 0; i < num_active_particles; ++ i, ++ instance_data)
 				{
-					Particle const & par = particles_[active_particles_[i].first];
+					Particle const & par = particles_[actived_particles_[i].first];
 					instance_data->pos = par.pos;
 					instance_data->life = par.life;
 					instance_data->spin = par.spin;
@@ -820,50 +914,47 @@ namespace KlayGE
 				}
 			}
 		}
-
-		return false;
 	}
 
 	void ParticleSystem::ParticleAlphaFromTex(std::string const & tex_name)
 	{
 		particle_alpha_from_tex_name_ = tex_name;
-		checked_pointer_cast<RenderParticles>(renderable_)->ParticleAlphaFrom(
-			SyncLoadTexture(tex_name, EAH_GPU_Read | EAH_Immutable));
+		checked_cast<RenderParticles&>(*render_particles_).ParticleAlphaFrom(SyncLoadTexture(tex_name, EAH_GPU_Read | EAH_Immutable));
 	}
 
 	void ParticleSystem::ParticleAlphaToTex(std::string const & tex_name)
 	{
 		particle_alpha_to_tex_name_ = tex_name;
-		checked_pointer_cast<RenderParticles>(renderable_)->ParticleAlphaTo(
-			SyncLoadTexture(tex_name, EAH_GPU_Read | EAH_Immutable));
+		checked_cast<RenderParticles&>(*render_particles_).ParticleAlphaTo(SyncLoadTexture(tex_name, EAH_GPU_Read | EAH_Immutable));
 	}
 
 	void ParticleSystem::ParticleColorFrom(Color const & clr)
 	{
 		particle_color_from_ = clr;
-		checked_pointer_cast<RenderParticles>(renderable_)->ParticleColorFrom(clr);
+		checked_cast<RenderParticles&>(*render_particles_).ParticleColorFrom(clr);
 	}
 
 	void ParticleSystem::ParticleColorTo(Color const & clr)
 	{
 		particle_color_to_ = clr;
-		checked_pointer_cast<RenderParticles>(renderable_)->ParticleColorTo(clr);
+		checked_cast<RenderParticles&>(*render_particles_).ParticleColorTo(clr);
 	}
 
 	void ParticleSystem::SceneDepthTexture(TexturePtr const & depth_tex)
 	{
-		checked_pointer_cast<RenderParticles>(renderable_)->SceneDepthTexture(depth_tex);
+		checked_cast<RenderParticles&>(*render_particles_).SceneDepthTexture(depth_tex);
 	}
 
 
-	ParticleSystemPtr SyncLoadParticleSystem(std::string const & psml_name)
+	ParticleSystemPtr SyncLoadParticleSystem(std::string_view psml_name)
 	{
 		return ResLoader::Instance().SyncQueryT<ParticleSystem>(MakeSharedPtr<ParticleSystemLoadingDesc>(psml_name));
 	}
 
-	function<ParticleSystemPtr()> ASyncLoadParticleSystem(std::string const & psml_name)
+	ParticleSystemPtr ASyncLoadParticleSystem(std::string_view psml_name)
 	{
-		return ResLoader::Instance().ASyncQueryT<ParticleSystem>(MakeSharedPtr<ParticleSystemLoadingDesc>(psml_name));
+		// TODO: Make it really async
+		return ResLoader::Instance().SyncQueryT<ParticleSystem>(MakeSharedPtr<ParticleSystemLoadingDesc>(psml_name));
 	}
 
 	void SaveParticleSystem(ParticleSystemPtr const & ps, std::string const & psml_name)
@@ -885,19 +976,10 @@ namespace KlayGE
 				XMLNodePtr color_node = doc.AllocNode(XNT_Element, "color");
 				{
 					Color const & from = ps->ParticleColorFrom();
-					{
-						std::string from_str = boost::lexical_cast<std::string>(from.r())
-							+ ' ' + boost::lexical_cast<std::string>(from.g())
-							+ ' ' + boost::lexical_cast<std::string>(from.b());
-						color_node->AppendAttrib(doc.AllocAttribString("from", from_str));
-					}
+					color_node->AppendAttrib(doc.AllocAttribString("from", std::format("{} {} {}", from.r(), from.g(), from.b())));
+
 					Color const & to = ps->ParticleColorTo();
-					{
-						std::string to_str = boost::lexical_cast<std::string>(to.r())
-							+ ' ' + boost::lexical_cast<std::string>(to.g())
-							+ ' ' + boost::lexical_cast<std::string>(to.b());
-						color_node->AppendAttrib(doc.AllocAttribString("to", to_str));
-					}
+					color_node->AppendAttrib(doc.AllocAttribString("to", std::format("{} {} {}", to.r(), to.g(), to.b())));
 				}
 				particle_node->AppendNode(color_node);
 			}
@@ -923,18 +1005,12 @@ namespace KlayGE
 			}
 			{
 				XMLNodePtr pos_node = doc.AllocNode(XNT_Element, "pos");
-				{
-					std::string min_str = boost::lexical_cast<std::string>(particle_emitter->MinPosition().x())
-						+ ' ' + boost::lexical_cast<std::string>(particle_emitter->MinPosition().y())
-						+ ' ' + boost::lexical_cast<std::string>(particle_emitter->MinPosition().z());
-					pos_node->AppendAttrib(doc.AllocAttribString("min", min_str));
-				}
-				{
-					std::string max_str = boost::lexical_cast<std::string>(particle_emitter->MaxPosition().x())
-						+ ' ' + boost::lexical_cast<std::string>(particle_emitter->MaxPosition().y())
-						+ ' ' + boost::lexical_cast<std::string>(particle_emitter->MaxPosition().z());
-					pos_node->AppendAttrib(doc.AllocAttribString("max", max_str));
-				}
+				pos_node->AppendAttrib(
+					doc.AllocAttribString("min", std::format("{} {} {}", particle_emitter->MinPosition().x(),
+													 particle_emitter->MinPosition().y(), particle_emitter->MinPosition().z())));
+				pos_node->AppendAttrib(
+					doc.AllocAttribString("max", std::format("{} {} {}", particle_emitter->MaxPosition().x(),
+													 particle_emitter->MaxPosition().y(), particle_emitter->MaxPosition().z())));
 				emitter_node->AppendNode(pos_node);
 			}		
 			{
@@ -961,7 +1037,7 @@ namespace KlayGE
 
 			if ("polyline" == particle_updater->Type())
 			{
-				shared_ptr<PolylineParticleUpdater> polyline_updater = checked_pointer_cast<PolylineParticleUpdater>(particle_updater);
+				std::shared_ptr<PolylineParticleUpdater> polyline_updater = checked_pointer_cast<PolylineParticleUpdater>(particle_updater);
 
 				XMLNodePtr size_over_life_node = doc.AllocNode(XNT_Element, "curve");
 				size_over_life_node->AppendAttrib(doc.AllocAttribString("name", "size_over_life"));
@@ -1013,11 +1089,15 @@ namespace KlayGE
 		}
 
 		std::ofstream ofs(psml_name.c_str());
+		if (!ofs)
+		{
+			ofs.open((ResLoader::Instance().LocalFolder() + psml_name).c_str());
+		}
 		doc.Print(ofs);
 	}
 
 
-	PointParticleEmitter::PointParticleEmitter(SceneObjectPtr const & ps)
+	PointParticleEmitter::PointParticleEmitter(ParticleSystemPtr const& ps)
 		: ParticleEmitter(ps),
 			random_dis_(0, 10000)
 	{
@@ -1031,7 +1111,7 @@ namespace KlayGE
 
 	ParticleEmitterPtr PointParticleEmitter::Clone()
 	{
-		shared_ptr<PointParticleEmitter> ret = MakeSharedPtr<PointParticleEmitter>(ps_.lock());
+		std::shared_ptr<PointParticleEmitter> ret = MakeSharedPtr<PointParticleEmitter>(ps_.lock());
 		this->DoClone(ret);
 		return ret;
 	}
@@ -1061,7 +1141,7 @@ namespace KlayGE
 	}
 
 
-	PolylineParticleUpdater::PolylineParticleUpdater(SceneObjectPtr const & ps)
+	PolylineParticleUpdater::PolylineParticleUpdater(ParticleSystemPtr const& ps)
 		: ParticleUpdater(ps)
 	{
 	}
@@ -1074,7 +1154,7 @@ namespace KlayGE
 
 	ParticleUpdaterPtr PolylineParticleUpdater::Clone()
 	{
-		shared_ptr<PolylineParticleUpdater> ret = MakeSharedPtr<PolylineParticleUpdater>(ps_.lock());
+		std::shared_ptr<PolylineParticleUpdater> ret = MakeSharedPtr<PolylineParticleUpdater>(ps_.lock());
 		this->DoClone(ret);
 		ret->size_over_life_ = size_over_life_;
 		ret->mass_over_life_ = mass_over_life_;
@@ -1084,52 +1164,44 @@ namespace KlayGE
 
 	void PolylineParticleUpdater::Update(Particle& par, float elapse_time)
 	{
-		std::vector<float2> local_size_over_life;
-		std::vector<float2> local_mass_over_life;
-		std::vector<float2> local_opacity_over_life;
-
-		{
-			unique_lock<mutex> lock(update_mutex_);
-			local_size_over_life = size_over_life_;
-			local_mass_over_life = mass_over_life_;
-			local_opacity_over_life = opacity_over_life_;
-		}
-
-		BOOST_ASSERT(!local_size_over_life.empty());
-		BOOST_ASSERT(!local_mass_over_life.empty());
-		BOOST_ASSERT(!local_opacity_over_life.empty());
+		BOOST_ASSERT(!this_frame_size_over_life_.empty());
+		BOOST_ASSERT(!this_frame_mass_over_life_.empty());
+		BOOST_ASSERT(!this_frame_opacity_over_life_.empty());
 
 		float pos = (par.init_life - par.life) / par.init_life;
 
-		float cur_size = local_size_over_life.back().y();
-		for (KLAYGE_AUTO(iter, local_size_over_life.begin()); iter != local_size_over_life.end() - 1; ++ iter)
+		float cur_size = this_frame_size_over_life_.back().y();
+		for (auto iter = std::next(this_frame_size_over_life_.begin()); iter != this_frame_size_over_life_.end(); ++ iter)
 		{
-			if ((iter + 1)->x() >= pos)
+			if (iter->x() >= pos)
 			{
-				float const s = (pos - iter->x()) / ((iter + 1)->x() - iter->x());
-				cur_size = MathLib::lerp(iter->y(), (iter + 1)->y(), s);
+				float2 const & prev = *std::prev(iter);
+				float const s = (pos - prev.x()) / (iter->x() - prev.x());
+				cur_size = MathLib::lerp(prev.y(), iter->y(), s);
 				break;
 			}
 		}
 
-		float cur_mass = local_mass_over_life.back().y();
-		for (KLAYGE_AUTO(iter, local_mass_over_life.begin()); iter != local_mass_over_life.end() - 1; ++ iter)
+		float cur_mass = this_frame_mass_over_life_.back().y();
+		for (auto iter = std::next(this_frame_mass_over_life_.begin()); iter != this_frame_mass_over_life_.end(); ++ iter)
 		{
-			if ((iter + 1)->x() >= pos)
+			if (iter->x() >= pos)
 			{
-				float const s = (pos - iter->x()) / ((iter + 1)->x() - iter->x());
-				cur_mass = MathLib::lerp(iter->y(), (iter + 1)->y(), s);
+				float2 const & prev = *std::prev(iter);
+				float const s = (pos - prev.x()) / (iter->x() - prev.x());
+				cur_mass = MathLib::lerp(prev.y(), iter->y(), s);
 				break;
 			}
 		}
 
-		float cur_alpha = local_opacity_over_life.back().y();
-		for (KLAYGE_AUTO(iter, local_opacity_over_life.begin()); iter != local_opacity_over_life.end() - 1; ++ iter)
+		float cur_alpha = this_frame_opacity_over_life_.back().y();
+		for (auto iter = std::next(this_frame_opacity_over_life_.begin()); iter != this_frame_opacity_over_life_.end(); ++ iter)
 		{
-			if ((iter + 1)->x() >= pos)
+			if (iter->x() >= pos)
 			{
-				float const s = (pos - iter->x()) / ((iter + 1)->x() - iter->x());
-				cur_alpha = MathLib::lerp(iter->y(), (iter + 1)->y(), s);
+				float2 const & prev = *std::prev(iter);
+				float const s = (pos - prev.x()) / (iter->x() - prev.x());
+				cur_alpha = MathLib::lerp(prev.y(), iter->y(), s);
 				break;
 			}
 		}
@@ -1143,5 +1215,14 @@ namespace KlayGE
 		par.spin += 0.001f;
 		par.size = cur_size;
 		par.alpha = cur_alpha;
+	}
+
+	void PolylineParticleUpdater::SnapParams()
+	{
+		std::lock_guard<std::mutex> lock(update_mutex_);
+
+		this_frame_size_over_life_ = size_over_life_;
+		this_frame_mass_over_life_ = mass_over_life_;
+		this_frame_opacity_over_life_ = opacity_over_life_;
 	}
 }
